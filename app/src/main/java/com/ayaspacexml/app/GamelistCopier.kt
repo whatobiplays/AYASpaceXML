@@ -22,6 +22,27 @@ data class CopyGamelistsResult(
     val message: String,
 )
 
+data class MediaSyncStats(
+    val copied: Int = 0,
+    val updated: Int = 0,
+    val deleted: Int = 0,
+    val skipped: Int = 0,
+    val failed: Int = 0,
+)
+
+enum class MediaSyncActionType {
+    COPY,
+    UPDATE,
+    SKIP,
+    DELETE_ORPHAN,
+    FAIL_MISSING_SOURCE,
+}
+
+data class MediaSyncAction(
+    val fileName: String,
+    val actionType: MediaSyncActionType,
+)
+
 object GamelistCopier {
     private const val TAG = "GamelistCopier"
 
@@ -120,9 +141,6 @@ object GamelistCopier {
             }
         }
 
-        // Clear existing media folders
-        val mediaClearFailed = !clearMediaFolders(toSystemDir)
-
         // Process media if available
         val mediaSystemDir = downloadedMediaDir?.findFile(dirName)
         val copyMessage = if (mediaSystemDir != null) {
@@ -136,37 +154,8 @@ object GamelistCopier {
 
         return when {
             copyMessage == null -> CopySystemResult(dirName, false, "Failed to write gamelist.")
-            mediaClearFailed -> CopySystemResult(dirName, true, "$copyMessage Existing media cleanup was incomplete.")
             else -> CopySystemResult(dirName, true, copyMessage)
         }
-    }
-
-    private fun clearMediaFolders(systemDir: DocumentFile): Boolean {
-        var allDeleted = true
-        try {
-            val mediaDir = systemDir.findFile("media")
-            if (mediaDir != null) {
-                Log.d(TAG, "Clearing existing media folders in ${systemDir.name}")
-
-                mediaDir.findFile("image")?.listFiles()?.forEach {
-                    if (!it.delete()) {
-                        Log.w(TAG, "Failed to delete image: ${it.name}")
-                        allDeleted = false
-                    }
-                }
-
-                mediaDir.findFile("thumbnail")?.listFiles()?.forEach {
-                    if (!it.delete()) {
-                        Log.w(TAG, "Failed to delete thumbnail: ${it.name}")
-                        allDeleted = false
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error clearing media folders", e)
-            return false
-        }
-        return allDeleted
     }
 
     private fun copyGamelistOnly(
@@ -235,37 +224,50 @@ object GamelistCopier {
 
         Log.d(TAG, "Media directories - covers: ${coversDir != null}, fanart: ${fanartDir != null}, screenshots: ${screenshotsDir != null}")
 
-        val modifiedXml = parseAndEnrichGamelist(
+        val syncPlan = buildMediaSyncPlan(
             context,
             gamelistFile,
             coversDir,
             fanartDir,
-            screenshotsDir,
-            imageDir,
-            thumbnailDir
+            screenshotsDir
         )
 
-        if (modifiedXml == null) {
+        if (syncPlan == null) {
             Log.e(TAG, "Failed to parse and enrich gamelist")
             return copyGamelistOnly(context, gamelistFile, toSystemDir)
         }
 
-        return if (writeGamelist(context, toSystemDir, modifiedXml)) {
-            "Copied gamelist and media."
+        val thumbnailStats = syncMediaDirectory(
+            context = context,
+            targetDir = thumbnailDir,
+            desiredFileNames = syncPlan.desiredThumbnailFileNames,
+            sourceFileResolver = buildThumbnailSourceResolver(coversDir)
+        )
+
+        val imageStats = syncMediaDirectory(
+            context = context,
+            targetDir = imageDir,
+            desiredFileNames = syncPlan.desiredImageFileNames,
+            sourceFileResolver = buildImageSourceResolver(fanartDir, screenshotsDir)
+        )
+
+        val writeSucceeded = writeGamelist(context, toSystemDir, syncPlan.xmlContent)
+        val totalFailures = thumbnailStats.failed + imageStats.failed + if (writeSucceeded) 0 else 1
+
+        return if (totalFailures == 0) {
+            "Synced gamelist and media. ${formatMediaSyncStats(thumbnailStats, imageStats)}"
         } else {
             null
         }
     }
 
-    private fun parseAndEnrichGamelist(
+    private fun buildMediaSyncPlan(
         context: Context,
         gamelistFile: DocumentFile,
         coversDir: DocumentFile?,
         fanartDir: DocumentFile?,
-        screenshotsDir: DocumentFile?,
-        imageDir: DocumentFile,
-        thumbnailDir: DocumentFile
-    ): String? {
+        screenshotsDir: DocumentFile?
+    ): MediaSyncPlan? {
         return try {
             val originalXml = context.contentResolver.openInputStream(gamelistFile.uri)?.use {
                 it.reader().readText()
@@ -280,15 +282,12 @@ object GamelistCopier {
             val fanartFiles = fileMap(fanartDir)
             val screenshotFiles = fileMap(screenshotsDir)
 
-            GamelistTransform.enrich(originalXml) { gameFileName ->
-                copyMediaForGame(
-                    context = context,
+            GamelistTransform.buildMediaSyncPlan(originalXml) { gameFileName ->
+                MediaFileMatcher.selectMedia(
                     gameFileName = gameFileName,
-                    coverFiles = coverFiles,
-                    fanartFiles = fanartFiles,
-                    screenshotFiles = screenshotFiles,
-                    imageDir = imageDir,
-                    thumbnailDir = thumbnailDir
+                    coverFileNames = coverFiles.keys.toList(),
+                    fanartFileNames = fanartFiles.keys.toList(),
+                    screenshotFileNames = screenshotFiles.keys.toList()
                 )
             }
         } catch (e: Exception) {
@@ -308,6 +307,20 @@ object GamelistCopier {
             Log.e(TAG, "Error listing files for ${directory.name}", e)
             emptyMap()
         }
+    }
+
+    private fun buildThumbnailSourceResolver(coversDir: DocumentFile?): (String) -> DocumentFile? {
+        val files = fileMap(coversDir)
+        return { fileName -> files[fileName] }
+    }
+
+    private fun buildImageSourceResolver(
+        fanartDir: DocumentFile?,
+        screenshotsDir: DocumentFile?
+    ): (String) -> DocumentFile? {
+        val fanartFiles = fileMap(fanartDir)
+        val screenshotFiles = fileMap(screenshotsDir)
+        return { fileName -> fanartFiles[fileName] ?: screenshotFiles[fileName] }
     }
 
     private fun writeGamelist(context: Context, toSystemDir: DocumentFile, xmlContent: String): Boolean {
@@ -341,44 +354,106 @@ object GamelistCopier {
         }
     }
 
-    private fun copyMediaForGame(
+    private fun syncMediaDirectory(
         context: Context,
-        gameFileName: String,
-        coverFiles: Map<String, DocumentFile>,
-        fanartFiles: Map<String, DocumentFile>,
-        screenshotFiles: Map<String, DocumentFile>,
-        imageDir: DocumentFile,
-        thumbnailDir: DocumentFile
-    ): SelectedMedia {
-        Log.d(TAG, "Looking for media for: $gameFileName")
+        targetDir: DocumentFile,
+        desiredFileNames: Set<String>,
+        sourceFileResolver: (String) -> DocumentFile?
+    ): MediaSyncStats {
+        var copied = 0
+        var updated = 0
+        var deleted = 0
+        var skipped = 0
+        var failed = 0
 
-        val selectedMedia = MediaFileMatcher.selectMedia(
-            gameFileName = gameFileName,
-            coverFileNames = coverFiles.keys.toList(),
-            fanartFileNames = fanartFiles.keys.toList(),
-            screenshotFileNames = screenshotFiles.keys.toList()
-        )
-
-        val copiedThumbnail = selectedMedia.thumbnailFileName
-            ?.let(coverFiles::get)
-            ?.takeIf { copyFile(context, it, thumbnailDir) }
-            ?.name
-
-        val copiedImage = selectedMedia.imageFileName
-            ?.let { fanartFiles[it] ?: screenshotFiles[it] }
-            ?.takeIf { copyFile(context, it, imageDir) }
-            ?.name
-
-        if (copiedThumbnail == null && copiedImage == null) {
-            Log.w(TAG, "No media copied for game: $gameFileName")
-        } else {
-            Log.d(TAG, "Copied media for game: $gameFileName")
+        val existingFiles = try {
+            targetDir.listFiles().mapNotNull { file -> file.name?.let { it to file } }.toMap()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error listing destination files in ${targetDir.name}", e)
+            emptyMap()
         }
 
-        return SelectedMedia(
-            thumbnailFileName = copiedThumbnail,
-            imageFileName = copiedImage
+        val sourceFiles = desiredFileNames.associateWith(sourceFileResolver)
+        val actions = planMediaSync(
+            desiredFileNames = desiredFileNames,
+            sourceFileSizes = sourceFiles.mapValues { (_, file) -> file?.length() },
+            existingFileSizes = existingFiles.mapValues { (_, file) -> file.length() }
         )
+
+        actions.forEach { action ->
+            when (action.actionType) {
+                MediaSyncActionType.COPY -> {
+                    val sourceFile = sourceFiles[action.fileName]
+                    if (sourceFile != null && copyFile(context, sourceFile, targetDir)) copied++ else failed++
+                }
+                MediaSyncActionType.UPDATE -> {
+                    val sourceFile = sourceFiles[action.fileName]
+                    val existingFile = existingFiles[action.fileName]
+                    if (sourceFile != null && existingFile != null && replaceFile(context, sourceFile, existingFile, targetDir)) {
+                        updated++
+                    } else {
+                        failed++
+                    }
+                }
+                MediaSyncActionType.SKIP -> skipped++
+                MediaSyncActionType.DELETE_ORPHAN -> {
+                    val existingFile = existingFiles[action.fileName]
+                    if (existingFile != null && existingFile.delete()) {
+                        deleted++
+                    } else {
+                        Log.w(TAG, "Failed to delete orphaned media: ${action.fileName}")
+                        failed++
+                    }
+                }
+                MediaSyncActionType.FAIL_MISSING_SOURCE -> {
+                    Log.w(TAG, "Missing source file for expected media: ${action.fileName}")
+                    failed++
+                }
+            }
+        }
+
+        return MediaSyncStats(
+            copied = copied,
+            updated = updated,
+            deleted = deleted,
+            skipped = skipped,
+            failed = failed
+        )
+    }
+
+    internal fun planMediaSyncForTest(
+        desiredFileNames: Set<String>,
+        sourceFileSizes: Map<String, Long?>,
+        existingFileSizes: Map<String, Long>
+    ): List<MediaSyncAction> = planMediaSync(desiredFileNames, sourceFileSizes, existingFileSizes)
+
+    private fun planMediaSync(
+        desiredFileNames: Set<String>,
+        sourceFileSizes: Map<String, Long?>,
+        existingFileSizes: Map<String, Long>
+    ): List<MediaSyncAction> {
+        val actions = mutableListOf<MediaSyncAction>()
+
+        desiredFileNames.sorted().forEach { fileName ->
+            val sourceSize = sourceFileSizes[fileName]
+            val existingSize = existingFileSizes[fileName]
+            val actionType = when {
+                sourceSize == null -> MediaSyncActionType.FAIL_MISSING_SOURCE
+                existingSize == null -> MediaSyncActionType.COPY
+                existingSize != sourceSize -> MediaSyncActionType.UPDATE
+                else -> MediaSyncActionType.SKIP
+            }
+            actions += MediaSyncAction(fileName, actionType)
+        }
+
+        existingFileSizes.keys
+            .filter { it !in desiredFileNames }
+            .sorted()
+            .forEach { fileName ->
+                actions += MediaSyncAction(fileName, MediaSyncActionType.DELETE_ORPHAN)
+            }
+
+        return actions
     }
 
     private fun copyFile(
@@ -426,6 +501,31 @@ object GamelistCopier {
             Log.e(TAG, "Error copying file ${sourceFile.name}", e)
             false
         }
+    }
+
+    private fun replaceFile(
+        context: Context,
+        sourceFile: DocumentFile,
+        existingTargetFile: DocumentFile,
+        targetDir: DocumentFile
+    ): Boolean {
+        val fileName = existingTargetFile.name ?: return false
+        if (!existingTargetFile.delete()) {
+            Log.w(TAG, "Failed to delete existing file: $fileName")
+            return false
+        }
+        return copyFile(context, sourceFile, targetDir)
+    }
+
+    private fun formatMediaSyncStats(thumbnailStats: MediaSyncStats, imageStats: MediaSyncStats): String {
+        val combined = MediaSyncStats(
+            copied = thumbnailStats.copied + imageStats.copied,
+            updated = thumbnailStats.updated + imageStats.updated,
+            deleted = thumbnailStats.deleted + imageStats.deleted,
+            skipped = thumbnailStats.skipped + imageStats.skipped,
+            failed = thumbnailStats.failed + imageStats.failed
+        )
+        return "Added ${combined.copied}, updated ${combined.updated}, deleted ${combined.deleted}, skipped ${combined.skipped}."
     }
 
     internal fun buildCopyResultForTest(systemResults: List<CopySystemResult>): CopyGamelistsResult =

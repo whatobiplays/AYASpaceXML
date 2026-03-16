@@ -73,6 +73,76 @@ class GamelistTransformTest {
     }
 
     @Test
+    fun `buildMediaSyncPlan tracks desired media files from selected games`() {
+        val xml = """
+            <gameList>
+              <game>
+                <path>./roms/Mario Kart DS.nds</path>
+                <name>Mario Kart DS</name>
+              </game>
+              <game>
+                <path>./roms/Advance Wars.nds</path>
+                <name>Advance Wars</name>
+              </game>
+            </gameList>
+        """.trimIndent()
+
+        val plan = GamelistTransform.buildMediaSyncPlan(xml) { gameFileName ->
+            when (gameFileName) {
+                "Mario Kart DS" -> SelectedMedia(
+                    thumbnailFileName = "Mario Kart DS.png",
+                    imageFileName = "Mario Kart DS-fanart.png"
+                )
+                "Advance Wars" -> SelectedMedia(
+                    thumbnailFileName = "Advance Wars.png",
+                    imageFileName = null
+                )
+                else -> SelectedMedia()
+            }
+        }
+
+        assertEquals(setOf("Mario Kart DS.png", "Advance Wars.png"), plan.desiredThumbnailFileNames)
+        assertEquals(setOf("Mario Kart DS-fanart.png"), plan.desiredImageFileNames)
+        assertTrue(plan.xmlContent.contains("./media/thumbnail/Mario Kart DS.png"))
+        assertTrue(plan.xmlContent.contains("./media/thumbnail/Advance Wars.png"))
+        assertTrue(plan.xmlContent.contains("./media/image/Mario Kart DS-fanart.png"))
+    }
+
+    @Test
+    fun `planMediaSync covers copy update skip delete and missing source`() {
+        val actions = GamelistCopierTestAccess.planMediaSync(
+            desiredFileNames = setOf(
+                "copy.png",
+                "update.png",
+                "skip.png",
+                "missing-source.png"
+            ),
+            sourceFileSizes = mapOf(
+                "copy.png" to 100L,
+                "update.png" to 200L,
+                "skip.png" to 300L,
+                "missing-source.png" to null
+            ),
+            existingFileSizes = mapOf(
+                "update.png" to 250L,
+                "skip.png" to 300L,
+                "orphan.png" to 400L
+            )
+        )
+
+        assertEquals(
+            listOf(
+                MediaSyncAction("copy.png", MediaSyncActionType.COPY),
+                MediaSyncAction("missing-source.png", MediaSyncActionType.FAIL_MISSING_SOURCE),
+                MediaSyncAction("skip.png", MediaSyncActionType.SKIP),
+                MediaSyncAction("update.png", MediaSyncActionType.UPDATE),
+                MediaSyncAction("orphan.png", MediaSyncActionType.DELETE_ORPHAN)
+            ),
+            actions
+        )
+    }
+
+    @Test
     fun `copy result reports complete success when all systems succeed`() {
         val result = GamelistCopierTestAccess.buildCopyResult(
             listOf(

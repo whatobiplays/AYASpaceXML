@@ -18,6 +18,12 @@ data class SelectedMedia(
     val imageFileName: String? = null,
 )
 
+data class MediaSyncPlan(
+    val xmlContent: String,
+    val desiredThumbnailFileNames: Set<String>,
+    val desiredImageFileNames: Set<String>,
+)
+
 object MediaFileMatcher {
     fun extractGameFileName(path: String): String {
         val filename = path.substringAfterLast('/')
@@ -57,6 +63,10 @@ object MediaFileMatcher {
 
 object GamelistTransform {
     fun enrich(xmlContent: String, resolveMedia: (String) -> SelectedMedia): String {
+        return buildMediaSyncPlan(xmlContent, resolveMedia).xmlContent
+    }
+
+    fun buildMediaSyncPlan(xmlContent: String, resolveMedia: (String) -> SelectedMedia): MediaSyncPlan {
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = false
             setXIncludeAwareIfSupported(false)
@@ -68,6 +78,8 @@ object GamelistTransform {
 
         val document = parseAsFragment(factory, xmlContent)
         val games = document.getElementsByTagName("game")
+        val desiredThumbnailFileNames = linkedSetOf<String>()
+        val desiredImageFileNames = linkedSetOf<String>()
 
         for (index in 0 until games.length) {
             val game = games.item(index) as? Element ?: continue
@@ -81,9 +93,11 @@ object GamelistTransform {
             removeDirectChildren(game, "thumbnail")
 
             selectedMedia.thumbnailFileName?.let {
+                desiredThumbnailFileNames += it
                 appendChildWithText(document, game, "thumbnail", "./media/thumbnail/$it")
             }
             selectedMedia.imageFileName?.let {
+                desiredImageFileNames += it
                 appendChildWithText(document, game, "image", "./media/image/$it")
             }
         }
@@ -96,7 +110,11 @@ object GamelistTransform {
             setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2")
         }
 
-        return serializeDocumentFragment(document, transformer)
+        return MediaSyncPlan(
+            xmlContent = serializeDocumentFragment(document, transformer),
+            desiredThumbnailFileNames = desiredThumbnailFileNames,
+            desiredImageFileNames = desiredImageFileNames
+        )
     }
 
     private fun directChildText(parent: Element, tagName: String): String? {
