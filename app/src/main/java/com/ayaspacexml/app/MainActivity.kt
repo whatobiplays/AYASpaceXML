@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -68,6 +67,7 @@ fun MainScreen(prefs: SharedPreferences) {
     var isCopying by remember { mutableStateOf(false) }
     var isSourceValid by remember { mutableStateOf(false) }
     var sourceChecked by remember { mutableStateOf(false) }
+    var copyResult by remember { mutableStateOf<CopyGamelistsResult?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
     suspend fun validateSourceFolder(context: Context, uriString: String?): Boolean {
@@ -107,17 +107,6 @@ fun MainScreen(prefs: SharedPreferences) {
                     val valid = validateSourceFolder(context, fromPathUri)
                     isSourceValid = valid
                     if (!valid) {
-                        Toast.makeText(
-                            context,
-                            "Selected folder must contain 'gamelists' and 'downloaded_media'.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    } else {
-                        Toast.makeText(
-                            context,
-                            "Valid source folder selected.",
-                            Toast.LENGTH_SHORT
-                        ).show()
                     }
                 }
             }
@@ -292,13 +281,8 @@ fun MainScreen(prefs: SharedPreferences) {
                     if (fromPathUri != null && toPathUri != null) {
                         isCopying = true
                         coroutineScope.launch {
-                            GamelistCopier.copyGamelists(context, fromPathUri!!, toPathUri!!)
+                            copyResult = GamelistCopier.copyGamelists(context, fromPathUri!!, toPathUri!!)
                             isCopying = false
-                            Toast.makeText(
-                                context,
-                                "Gamelists copied successfully!",
-                                Toast.LENGTH_SHORT
-                            ).show()
                         }
                     }
                 },
@@ -317,4 +301,49 @@ fun MainScreen(prefs: SharedPreferences) {
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
+
+    copyResult?.let { result ->
+        AlertDialog(
+            onDismissRequest = { copyResult = null },
+            title = {
+                Text(if (result.success) "Copy Complete" else "Copy Summary")
+            },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(buildCopyResultSummary(result))
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { copyResult = null }) {
+                    Text("Dismiss")
+                }
+            }
+        )
+    }
+}
+
+private fun buildCopyResultSummary(result: CopyGamelistsResult): String {
+    if (result.systemResults.isEmpty()) {
+        return result.message
+    }
+
+    val details = result.systemResults.joinToString("\n") { systemResult ->
+        val status = if (systemResult.success) "OK" else "Failed"
+        "$status: ${systemResult.systemName} - ${systemResult.message}"
+    }
+
+    return buildString {
+        appendLine(result.message)
+        appendLine()
+        appendLine("Processed: ${result.systemsProcessed}")
+        appendLine("Succeeded: ${result.systemsSucceeded}")
+        appendLine("Failed: ${result.systemsFailed}")
+        appendLine()
+        append(details)
+    }.trim()
 }

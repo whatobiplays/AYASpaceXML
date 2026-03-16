@@ -7,6 +7,21 @@ import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+data class CopySystemResult(
+    val systemName: String,
+    val success: Boolean,
+    val message: String,
+)
+
+data class CopyGamelistsResult(
+    val success: Boolean,
+    val systemsProcessed: Int,
+    val systemsSucceeded: Int,
+    val systemsFailed: Int,
+    val systemResults: List<CopySystemResult>,
+    val message: String,
+)
+
 object GamelistCopier {
     private const val TAG = "GamelistCopier"
 
@@ -14,24 +29,24 @@ object GamelistCopier {
         context: Context,
         fromPathUri: String,
         toPathUri: String
-    ) = withContext(Dispatchers.IO) {
+    ): CopyGamelistsResult = withContext(Dispatchers.IO) {
         try {
             val fromDocumentFile = DocumentFile.fromTreeUri(context, fromPathUri.toUri())
             if (fromDocumentFile == null) {
                 Log.e(TAG, "Failed to open source directory: $fromPathUri")
-                return@withContext
+                return@withContext fatalResult("Failed to open source directory.")
             }
 
             val toDocumentFile = DocumentFile.fromTreeUri(context, toPathUri.toUri())
             if (toDocumentFile == null) {
                 Log.e(TAG, "Failed to open destination directory: $toPathUri")
-                return@withContext
+                return@withContext fatalResult("Failed to open destination directory.")
             }
 
             val gamelistsDir = fromDocumentFile.findFile("gamelists")
             if (gamelistsDir == null) {
                 Log.e(TAG, "gamelists directory not found in source")
-                return@withContext
+                return@withContext fatalResult("Source folder is missing 'gamelists'.")
             }
 
             val downloadedMediaDir = fromDocumentFile.findFile("downloaded_media")
@@ -41,23 +56,36 @@ object GamelistCopier {
 
             val systemDirs = gamelistsDir.listFiles()
             Log.d(TAG, "Found ${systemDirs.size} system directories to process")
+            val systemResults = mutableListOf<CopySystemResult>()
 
             systemDirs.forEach { systemDir ->
                 if (systemDir.isDirectory) {
                     val dirName = systemDir.name ?: "unknown"
                     Log.d(TAG, "Processing system directory: $dirName")
                     try {
-                        processSystemDirectory(context, systemDir, toDocumentFile, downloadedMediaDir)
-                        Log.d(TAG, "Successfully processed: $dirName")
+                        val result = processSystemDirectory(context, systemDir, toDocumentFile, downloadedMediaDir)
+                        systemResults += result
+                        if (result.success) {
+                            Log.d(TAG, "Successfully processed: $dirName")
+                        } else {
+                            Log.w(TAG, "Processed with failure: $dirName - ${result.message}")
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error processing system directory $dirName", e)
+                        systemResults += CopySystemResult(
+                            systemName = dirName,
+                            success = false,
+                            message = "Unexpected error: ${e.message ?: "unknown"}"
+                        )
                     }
                 }
             }
 
             Log.d(TAG, "Finished processing all system directories")
+            buildCopyResult(systemResults)
         } catch (e: Exception) {
             Log.e(TAG, "Fatal error in copyGamelists", e)
+            fatalResult("Copy failed: ${e.message ?: "unknown error"}")
         }
     }
 
@@ -66,17 +94,17 @@ object GamelistCopier {
         systemDir: DocumentFile,
         toDocumentFile: DocumentFile,
         downloadedMediaDir: DocumentFile?
-    ) {
+    ): CopySystemResult {
         val dirName = systemDir.name
         if (dirName == null) {
             Log.e(TAG, "System directory has no name")
-            return
+            return CopySystemResult("unknown", false, "System directory has no name.")
         }
 
         val gamelistFile = systemDir.findFile("gamelist.xml")
         if (gamelistFile?.isFile != true) {
             Log.w(TAG, "No gamelist.xml found in $dirName")
-            return
+            return CopySystemResult(dirName, false, "No gamelist.xml found.")
         }
 
         Log.d(TAG, "Found gamelist.xml in $dirName")
@@ -88,16 +116,16 @@ object GamelistCopier {
             toSystemDir = toDocumentFile.createDirectory(dirName)
             if (toSystemDir == null) {
                 Log.e(TAG, "Failed to create system directory: $dirName")
-                return
+                return CopySystemResult(dirName, false, "Failed to create destination system directory.")
             }
         }
 
         // Clear existing media folders
-        clearMediaFolders(toSystemDir)
+        val mediaClearFailed = !clearMediaFolders(toSystemDir)
 
         // Process media if available
         val mediaSystemDir = downloadedMediaDir?.findFile(dirName)
-        if (mediaSystemDir != null) {
+        val copyMessage = if (mediaSystemDir != null) {
             Log.d(TAG, "Found media directory for $dirName")
             processGamelistWithMedia(context, gamelistFile, toSystemDir, mediaSystemDir)
         } else {
@@ -105,9 +133,16 @@ object GamelistCopier {
             // Still copy the gamelist even without media
             copyGamelistOnly(context, gamelistFile, toSystemDir)
         }
+
+        return when {
+            copyMessage == null -> CopySystemResult(dirName, false, "Failed to write gamelist.")
+            mediaClearFailed -> CopySystemResult(dirName, true, "$copyMessage Existing media cleanup was incomplete.")
+            else -> CopySystemResult(dirName, true, copyMessage)
+        }
     }
 
-    private fun clearMediaFolders(systemDir: DocumentFile) {
+    private fun clearMediaFolders(systemDir: DocumentFile): Boolean {
+        var allDeleted = true
         try {
             val mediaDir = systemDir.findFile("media")
             if (mediaDir != null) {
@@ -116,25 +151,29 @@ object GamelistCopier {
                 mediaDir.findFile("image")?.listFiles()?.forEach {
                     if (!it.delete()) {
                         Log.w(TAG, "Failed to delete image: ${it.name}")
+                        allDeleted = false
                     }
                 }
 
                 mediaDir.findFile("thumbnail")?.listFiles()?.forEach {
                     if (!it.delete()) {
                         Log.w(TAG, "Failed to delete thumbnail: ${it.name}")
+                        allDeleted = false
                     }
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error clearing media folders", e)
+            return false
         }
+        return allDeleted
     }
 
     private fun copyGamelistOnly(
         context: Context,
         gamelistFile: DocumentFile,
         toSystemDir: DocumentFile
-    ) {
+    ): String? {
         try {
             val content = context.contentResolver.openInputStream(gamelistFile.uri)?.use {
                 it.reader().readText()
@@ -142,12 +181,17 @@ object GamelistCopier {
 
             if (content == null) {
                 Log.e(TAG, "Failed to read gamelist content")
-                return
+                return null
             }
 
-            writeGamelist(context, toSystemDir, content)
+            return if (writeGamelist(context, toSystemDir, content)) {
+                "Copied gamelist."
+            } else {
+                null
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error copying gamelist", e)
+            return null
         }
     }
 
@@ -156,15 +200,14 @@ object GamelistCopier {
         gamelistFile: DocumentFile,
         toSystemDir: DocumentFile,
         mediaSystemDir: DocumentFile
-    ) {
+    ): String? {
         // Ensure media directory structure exists
         var mediaDir = toSystemDir.findFile("media")
         if (mediaDir == null) {
             mediaDir = toSystemDir.createDirectory("media")
             if (mediaDir == null) {
                 Log.e(TAG, "Failed to create media directory")
-                copyGamelistOnly(context, gamelistFile, toSystemDir)
-                return
+                return copyGamelistOnly(context, gamelistFile, toSystemDir)
             }
         }
 
@@ -173,8 +216,7 @@ object GamelistCopier {
             imageDir = mediaDir.createDirectory("image")
             if (imageDir == null) {
                 Log.e(TAG, "Failed to create image directory")
-                copyGamelistOnly(context, gamelistFile, toSystemDir)
-                return
+                return copyGamelistOnly(context, gamelistFile, toSystemDir)
             }
         }
 
@@ -183,8 +225,7 @@ object GamelistCopier {
             thumbnailDir = mediaDir.createDirectory("thumbnail")
             if (thumbnailDir == null) {
                 Log.e(TAG, "Failed to create thumbnail directory")
-                copyGamelistOnly(context, gamelistFile, toSystemDir)
-                return
+                return copyGamelistOnly(context, gamelistFile, toSystemDir)
             }
         }
 
@@ -206,11 +247,14 @@ object GamelistCopier {
 
         if (modifiedXml == null) {
             Log.e(TAG, "Failed to parse and enrich gamelist")
-            copyGamelistOnly(context, gamelistFile, toSystemDir)
-            return
+            return copyGamelistOnly(context, gamelistFile, toSystemDir)
         }
 
-        writeGamelist(context, toSystemDir, modifiedXml)
+        return if (writeGamelist(context, toSystemDir, modifiedXml)) {
+            "Copied gamelist and media."
+        } else {
+            null
+        }
     }
 
     private fun parseAndEnrichGamelist(
@@ -266,7 +310,7 @@ object GamelistCopier {
         }
     }
 
-    private fun writeGamelist(context: Context, toSystemDir: DocumentFile, xmlContent: String) {
+    private fun writeGamelist(context: Context, toSystemDir: DocumentFile, xmlContent: String): Boolean {
         try {
             // Delete existing gamelist if it exists
             toSystemDir.findFile("gamelist.xml")?.let { existingFile ->
@@ -279,7 +323,7 @@ object GamelistCopier {
             val gamelistFile = toSystemDir.createFile("application/xml", "gamelist.xml")
             if (gamelistFile == null) {
                 Log.e(TAG, "Failed to create gamelist.xml in ${toSystemDir.name}")
-                return
+                return false
             }
 
             context.contentResolver.openOutputStream(gamelistFile.uri)?.use { outputStream ->
@@ -290,8 +334,10 @@ object GamelistCopier {
             }
 
             Log.d(TAG, "Successfully wrote gamelist.xml to ${toSystemDir.name}")
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Error writing gamelist", e)
+            return false
         }
     }
 
@@ -381,4 +427,37 @@ object GamelistCopier {
             false
         }
     }
+
+    internal fun buildCopyResultForTest(systemResults: List<CopySystemResult>): CopyGamelistsResult =
+        buildCopyResult(systemResults)
+
+    private fun buildCopyResult(systemResults: List<CopySystemResult>): CopyGamelistsResult {
+        val succeeded = systemResults.count { it.success }
+        val failed = systemResults.size - succeeded
+        val message = when {
+            systemResults.isEmpty() -> "No system directories found."
+            failed == 0 -> "Copied ${systemResults.size} system(s) successfully."
+            succeeded == 0 -> "Copy failed for all $failed system(s)."
+            else -> "Copied $succeeded system(s); $failed failed."
+        }
+
+        return CopyGamelistsResult(
+            success = systemResults.isNotEmpty() && failed == 0,
+            systemsProcessed = systemResults.size,
+            systemsSucceeded = succeeded,
+            systemsFailed = failed,
+            systemResults = systemResults,
+            message = message
+        )
+    }
+
+    private fun fatalResult(message: String): CopyGamelistsResult =
+        CopyGamelistsResult(
+            success = false,
+            systemsProcessed = 0,
+            systemsSucceeded = 0,
+            systemsFailed = 0,
+            systemResults = emptyList(),
+            message = message
+        )
 }

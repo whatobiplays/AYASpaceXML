@@ -71,4 +71,36 @@ class GamelistTransformTest {
         assertFalse(enriched.contains("./old/thumb.png"))
         assertFalse(enriched.contains("./old/image.png"))
     }
+
+    @Test
+    fun `copy result reports complete success when all systems succeed`() {
+        val result = GamelistCopierTestAccess.buildCopyResult(
+            listOf(
+                CopySystemResult("nds", true, "Copied gamelist and media."),
+                CopySystemResult("n3ds", true, "Copied gamelist and media.")
+            )
+        )
+
+        assertTrue(result.success)
+        assertEquals(2, result.systemsProcessed)
+        assertEquals(2, result.systemsSucceeded)
+        assertEquals(0, result.systemsFailed)
+        assertEquals("Copied 2 system(s) successfully.", result.message)
+    }
+
+    @Test
+    fun `copy result reports partial failure correctly`() {
+        val result = GamelistCopierTestAccess.buildCopyResult(
+            listOf(
+                CopySystemResult("nds", true, "Copied gamelist and media."),
+                CopySystemResult("n3ds", false, "No gamelist.xml found.")
+            )
+        )
+
+        assertFalse(result.success)
+        assertEquals(2, result.systemsProcessed)
+        assertEquals(1, result.systemsSucceeded)
+        assertEquals(1, result.systemsFailed)
+        assertEquals("Copied 1 system(s); 1 failed.", result.message)
+    }
 }
