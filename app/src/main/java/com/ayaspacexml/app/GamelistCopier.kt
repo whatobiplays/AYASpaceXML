@@ -105,7 +105,9 @@ object GamelistCopier {
             }
 
             val systemDirs = gamelistsDir.listFiles()
-            val directoriesToProcess = systemDirs.filter { it.isDirectory }
+            val directoriesToProcess = systemDirs
+                .filter { it.isDirectory }
+                .sortedBy { it.name.orEmpty().lowercase() }
             Log.d(TAG, "Found ${directoriesToProcess.size} system directories to process")
             val systemResults = mutableListOf<CopySystemResult>()
             val totalSystems = directoriesToProcess.size
@@ -702,9 +704,10 @@ object GamelistCopier {
         buildCopyResult(systemResults)
 
     private fun buildCopyResult(systemResults: List<CopySystemResult>): CopyGamelistsResult {
-        val succeeded = systemResults.count { it.success }
-        val failed = systemResults.size - succeeded
-        val combinedMetrics = systemResults.fold(MediaSyncStats()) { acc, result ->
+        val sortedResults = systemResults.sortedBy { it.systemName.lowercase() }
+        val succeeded = sortedResults.count { it.success }
+        val failed = sortedResults.size - succeeded
+        val combinedMetrics = sortedResults.fold(MediaSyncStats()) { acc, result ->
             MediaSyncStats(
                 copied = acc.copied + result.metrics.copied,
                 updated = acc.updated + result.metrics.updated,
@@ -714,18 +717,18 @@ object GamelistCopier {
             )
         }
         val message = when {
-            systemResults.isEmpty() -> "No system directories found."
-            failed == 0 -> "Synced ${systemResults.size} system(s) successfully."
+            sortedResults.isEmpty() -> "No system directories found."
+            failed == 0 -> "Synced ${sortedResults.size} system(s) successfully."
             succeeded == 0 -> "Sync failed for all $failed system(s)."
             else -> "Synced $succeeded system(s); $failed failed."
         }
 
         return CopyGamelistsResult(
-            success = systemResults.isNotEmpty() && failed == 0,
-            systemsProcessed = systemResults.size,
+            success = sortedResults.isNotEmpty() && failed == 0,
+            systemsProcessed = sortedResults.size,
             systemsSucceeded = succeeded,
             systemsFailed = failed,
-            systemResults = systemResults,
+            systemResults = sortedResults,
             metrics = combinedMetrics,
             message = message
         )
