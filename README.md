@@ -6,7 +6,7 @@
 ![Platform](https://img.shields.io/badge/platform-Android-green.svg)
 ![Language](https://img.shields.io/badge/language-Kotlin-purple.svg)
 
-Copy ES-DE 'gamelist.xml' files and media assets ('image', 'thumbnail') to enable full AYASpace compatibility.
+Sync ES-DE 'gamelist.xml' files and media assets ('image', 'thumbnail') to enable full AYASpace compatibility.
 
 ### Directory Structure
 
@@ -45,9 +45,9 @@ ROMs/
 
 1. **Select ES-DE Folder** - Point to your ES-DE installation directory
 2. **Select ROMs Folder** - Point to your AYASpace ROMs directory
-3. **Press Copy**
+3. **Press Sync**
 
-Each time you run the copy operation:
+Each time you run the sync operation:
 - Old media files are automatically cleaned up
 - Fresh copies are made from ES-DE
 - Gamelist XML is regenerated with correct paths

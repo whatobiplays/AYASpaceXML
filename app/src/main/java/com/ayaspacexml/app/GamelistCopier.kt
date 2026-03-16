@@ -106,7 +106,7 @@ object GamelistCopier {
             buildCopyResult(systemResults)
         } catch (e: Exception) {
             Log.e(TAG, "Fatal error in copyGamelists", e)
-            fatalResult("Copy failed: ${e.message ?: "unknown error"}")
+            fatalResult("Sync failed: ${e.message ?: "unknown error"}")
         }
     }
 
@@ -537,8 +537,8 @@ object GamelistCopier {
         val message = when {
             systemResults.isEmpty() -> "No system directories found."
             failed == 0 -> "Copied ${systemResults.size} system(s) successfully."
-            succeeded == 0 -> "Copy failed for all $failed system(s)."
-            else -> "Copied $succeeded system(s); $failed failed."
+            succeeded == 0 -> "Sync failed for all $failed system(s)."
+            else -> "Synced $succeeded system(s); $failed failed."
         }
 
         return CopyGamelistsResult(

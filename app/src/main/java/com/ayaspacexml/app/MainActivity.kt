@@ -64,10 +64,10 @@ fun MainScreen(prefs: SharedPreferences) {
     val context = LocalContext.current
     var fromPathUri by remember { mutableStateOf(prefs.getString("from_path", null)) }
     var toPathUri by remember { mutableStateOf(prefs.getString("to_path", null)) }
-    var isCopying by remember { mutableStateOf(false) }
+    var isSyncing by remember { mutableStateOf(false) }
     var isSourceValid by remember { mutableStateOf(false) }
     var sourceChecked by remember { mutableStateOf(false) }
-    var copyResult by remember { mutableStateOf<CopyGamelistsResult?>(null) }
+    var syncResult by remember { mutableStateOf<CopyGamelistsResult?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
     suspend fun validateSourceFolder(context: Context, uriString: String?): Boolean {
@@ -145,7 +145,7 @@ fun MainScreen(prefs: SharedPreferences) {
             )
 
             Text(
-                text = "Copy ES-DE 'gamelist.xml' files and media assets ('image', 'thumbnail') to enable full AYASpace compatibility.",
+                text = "Sync ES-DE 'gamelist.xml' files and media assets ('image', 'thumbnail') to enable full AYASpace compatibility.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 32.dp)
@@ -239,7 +239,7 @@ fun MainScreen(prefs: SharedPreferences) {
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Text(
-                        text = "Choose the folder with your system subdirectories (e.g., 'nds', '3ds'). Gamelists will be copied into each system folder.",
+                        text = "Choose the folder with your system subdirectories (e.g., 'nds', '3ds'). Gamelists will be synced into each system folder.",
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -275,25 +275,25 @@ fun MainScreen(prefs: SharedPreferences) {
                 }
             }
 
-            // Copy button
+            // Sync button
             Button(
                 onClick = {
                     if (fromPathUri != null && toPathUri != null) {
-                        isCopying = true
+                        isSyncing = true
                         coroutineScope.launch {
-                            copyResult = GamelistCopier.copyGamelists(context, fromPathUri!!, toPathUri!!)
-                            isCopying = false
+                            syncResult = GamelistCopier.copyGamelists(context, fromPathUri!!, toPathUri!!)
+                            isSyncing = false
                         }
                     }
                 },
-                enabled = fromPathUri != null && toPathUri != null && !isCopying && isSourceValid,
+                enabled = fromPathUri != null && toPathUri != null && !isSyncing && isSourceValid,
                 modifier = Modifier
                     .fillMaxWidth(0.7f)
                     .height(56.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text(
-                    text = if (isCopying) "Copying..." else "Copy Gamelists",
+                    text = if (isSyncing) "Syncing..." else "Sync Gamelists",
                     style = MaterialTheme.typography.titleMedium
                 )
             }
@@ -302,11 +302,11 @@ fun MainScreen(prefs: SharedPreferences) {
         }
     }
 
-    copyResult?.let { result ->
+    syncResult?.let { result ->
         AlertDialog(
-            onDismissRequest = { copyResult = null },
+            onDismissRequest = { syncResult = null },
             title = {
-                Text(if (result.success) "Copy Complete" else "Copy Summary")
+                Text(if (result.success) "Sync Complete" else "Sync Summary")
             },
             text = {
                 Box(
@@ -319,7 +319,7 @@ fun MainScreen(prefs: SharedPreferences) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = { copyResult = null }) {
+                TextButton(onClick = { syncResult = null }) {
                     Text("Dismiss")
                 }
             }
