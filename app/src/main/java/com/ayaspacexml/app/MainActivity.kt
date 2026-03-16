@@ -67,10 +67,17 @@ private data class FolderCardModel(
     val selectedPath: String,
     val buttonLabel: String,
     val onSelect: () -> Unit,
+    val enabled: Boolean = true,
     val footer: (@Composable () -> Unit)? = null,
 )
 
+private enum class SyncScopeMode {
+    ALL,
+    SELECTED,
+}
+
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun MainScreen(prefs: SharedPreferences) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
@@ -80,6 +87,9 @@ fun MainScreen(prefs: SharedPreferences) {
     var isSyncing by remember { mutableStateOf(false) }
     var isSourceValid by remember { mutableStateOf(false) }
     var sourceChecked by remember { mutableStateOf(false) }
+    var availableSystems by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selectedSystems by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var syncScopeMode by remember { mutableStateOf(SyncScopeMode.ALL) }
     var syncProgress by remember { mutableStateOf<SyncProgress?>(null) }
     var syncResult by remember { mutableStateOf<CopyGamelistsResult?>(null) }
     var showSystemDetails by remember { mutableStateOf(false) }
@@ -95,11 +105,29 @@ fun MainScreen(prefs: SharedPreferences) {
         }
     }
 
+    suspend fun loadSourceSystems(context: Context, uriString: String?): List<String> {
+        if (uriString == null) return emptyList()
+        return withContext(Dispatchers.IO) {
+            val tree = DocumentFile.fromTreeUri(context, uriString.toUri()) ?: return@withContext emptyList()
+            val gamelistsDir = tree.findFile("gamelists") ?: return@withContext emptyList()
+            gamelistsDir.listFiles()
+                .filter { it.isDirectory }
+                .mapNotNull { it.name }
+                .sortedBy { it.lowercase() }
+        }
+    }
+
     // Validate saved folder automatically on launch
     LaunchedEffect(fromPathUri) {
         if (fromPathUri != null && !sourceChecked) {
             val valid = validateSourceFolder(context, fromPathUri)
             isSourceValid = valid
+            availableSystems = if (valid) {
+                loadSourceSystems(context, fromPathUri)
+            } else {
+                emptyList()
+            }
+            selectedSystems = availableSystems.toSet()
             sourceChecked = true
         }
     }
@@ -121,6 +149,13 @@ fun MainScreen(prefs: SharedPreferences) {
                 coroutineScope.launch {
                     val valid = validateSourceFolder(context, fromPathUri)
                     isSourceValid = valid
+                    availableSystems = if (valid) {
+                        loadSourceSystems(context, fromPathUri)
+                    } else {
+                        emptyList()
+                    }
+                    selectedSystems = availableSystems.toSet()
+                    syncScopeMode = SyncScopeMode.ALL
                 }
             }
         }
@@ -149,6 +184,7 @@ fun MainScreen(prefs: SharedPreferences) {
             selectedPath = getDisplayNameFromUri(fromPathUri),
             buttonLabel = "Select Source",
             onSelect = { fromPathLauncher.launch(null) },
+            enabled = !isSyncing,
             footer = {
                 if (fromPathUri != null && !isSourceValid && sourceChecked) {
                     Text(
@@ -165,7 +201,8 @@ fun MainScreen(prefs: SharedPreferences) {
             description = "Choose the folder with your system subdirectories (e.g., 'nds', '3ds'). Gamelists will be synced into each system folder.",
             selectedPath = getDisplayNameFromUri(toPathUri),
             buttonLabel = "Select Destination",
-            onSelect = { toPathLauncher.launch(null) }
+            onSelect = { toPathLauncher.launch(null) },
+            enabled = !isSyncing
         )
     )
 
@@ -205,6 +242,7 @@ fun MainScreen(prefs: SharedPreferences) {
                             selectedPath = card.selectedPath,
                             buttonLabel = card.buttonLabel,
                             onSelect = card.onSelect,
+                            enabled = card.enabled,
                             modifier = Modifier.weight(1f),
                             footer = card.footer
                         )
@@ -218,9 +256,116 @@ fun MainScreen(prefs: SharedPreferences) {
                         selectedPath = card.selectedPath,
                         buttonLabel = card.buttonLabel,
                         onSelect = card.onSelect,
+                        enabled = card.enabled,
                         modifier = Modifier.padding(bottom = if (index == folderCards.lastIndex) 32.dp else 20.dp),
                         footer = card.footer
                     )
+                }
+            }
+
+            if (isSourceValid && availableSystems.isNotEmpty()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Text(
+                            text = "Systems to Sync",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        SingleChoiceSegmentedButtonRow(
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            SegmentedButton(
+                                selected = syncScopeMode == SyncScopeMode.ALL,
+                                enabled = !isSyncing,
+                                onClick = {
+                                    syncScopeMode = SyncScopeMode.ALL
+                                    selectedSystems = availableSystems.toSet()
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
+                            ) {
+                                Text("All Systems")
+                            }
+
+                            SegmentedButton(
+                                selected = syncScopeMode == SyncScopeMode.SELECTED,
+                                enabled = !isSyncing,
+                                onClick = {
+                                    syncScopeMode = SyncScopeMode.SELECTED
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
+                            ) {
+                                Text("Choose Systems")
+                            }
+                        }
+
+                        if (syncScopeMode == SyncScopeMode.SELECTED) {
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                TextButton(
+                                    enabled = !isSyncing,
+                                    onClick = { selectedSystems = availableSystems.toSet() },
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text("Select All")
+                                }
+
+                                TextButton(
+                                    enabled = !isSyncing,
+                                    onClick = { selectedSystems = emptySet() },
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text("Deselect All")
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 220.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                availableSystems.forEach { systemName ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Checkbox(
+                                            checked = systemName in selectedSystems,
+                                            enabled = !isSyncing,
+                                            onCheckedChange = { checked ->
+                                                selectedSystems = if (checked) {
+                                                    selectedSystems + systemName
+                                                } else {
+                                                    selectedSystems - systemName
+                                                }
+                                            }
+                                        )
+                                        Text(
+                                            text = systemName,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -271,19 +416,24 @@ fun MainScreen(prefs: SharedPreferences) {
                 onClick = {
                     if (fromPathUri != null && toPathUri != null) {
                         isSyncing = true
-                        syncProgress = SyncProgress(
-                            totalSystems = 0,
-                            completedSystems = 0,
-                            status = "Preparing sync"
-                        )
-                        coroutineScope.launch {
-                            syncResult = GamelistCopier.copyGamelists(
-                                context,
-                                fromPathUri!!,
-                                toPathUri!!
-                            ) { progress ->
-                                withContext(Dispatchers.Main) {
-                                    syncProgress = progress
+                            syncProgress = SyncProgress(
+                                totalSystems = 0,
+                                completedSystems = 0,
+                                status = "Preparing sync"
+                            )
+                            coroutineScope.launch {
+                                val systemsToSync = when (syncScopeMode) {
+                                    SyncScopeMode.ALL -> null
+                                    SyncScopeMode.SELECTED -> selectedSystems
+                                }
+                                syncResult = GamelistCopier.copyGamelists(
+                                    context,
+                                    fromPathUri!!,
+                                    toPathUri!!,
+                                    selectedSystems = systemsToSync
+                                ) { progress ->
+                                    withContext(Dispatchers.Main) {
+                                        syncProgress = progress
                                 }
                             }
                             showSystemDetails = false
@@ -292,7 +442,11 @@ fun MainScreen(prefs: SharedPreferences) {
                         }
                     }
                 },
-                enabled = fromPathUri != null && toPathUri != null && !isSyncing && isSourceValid,
+                enabled = fromPathUri != null &&
+                    toPathUri != null &&
+                    !isSyncing &&
+                    isSourceValid &&
+                    (syncScopeMode == SyncScopeMode.ALL || selectedSystems.isNotEmpty()),
                 modifier = Modifier
                     .fillMaxWidth(0.7f)
                     .height(56.dp),
@@ -368,6 +522,7 @@ private fun FolderCard(
     selectedPath: String,
     buttonLabel: String,
     onSelect: () -> Unit,
+    enabled: Boolean,
     modifier: Modifier = Modifier,
     footer: @Composable (() -> Unit)? = null
 ) {
@@ -418,6 +573,7 @@ private fun FolderCard(
 
             Button(
                 onClick = onSelect,
+                enabled = enabled,
                 modifier = Modifier.widthIn(min = 160.dp)
             ) {
                 Text(buttonLabel)

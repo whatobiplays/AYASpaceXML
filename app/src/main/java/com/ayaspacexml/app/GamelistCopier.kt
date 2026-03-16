@@ -78,6 +78,7 @@ object GamelistCopier {
         context: Context,
         fromPathUri: String,
         toPathUri: String,
+        selectedSystems: Set<String>? = null,
         onProgress: suspend (SyncProgress) -> Unit = {}
     ): CopyGamelistsResult = withContext(Dispatchers.IO) {
         try {
@@ -107,6 +108,7 @@ object GamelistCopier {
             val systemDirs = gamelistsDir.listFiles()
             val directoriesToProcess = systemDirs
                 .filter { it.isDirectory }
+                .filter { directory -> selectedSystems == null || directory.name in selectedSystems }
                 .sortedBy { it.name.orEmpty().lowercase() }
             Log.d(TAG, "Found ${directoriesToProcess.size} system directories to process")
             val systemResults = mutableListOf<CopySystemResult>()
