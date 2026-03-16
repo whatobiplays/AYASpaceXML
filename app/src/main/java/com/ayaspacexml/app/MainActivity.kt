@@ -80,6 +80,7 @@ fun MainScreen(prefs: SharedPreferences) {
     var isSyncing by remember { mutableStateOf(false) }
     var isSourceValid by remember { mutableStateOf(false) }
     var sourceChecked by remember { mutableStateOf(false) }
+    var syncProgress by remember { mutableStateOf<SyncProgress?>(null) }
     var syncResult by remember { mutableStateOf<CopyGamelistsResult?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -222,13 +223,69 @@ fun MainScreen(prefs: SharedPreferences) {
                 }
             }
 
+            syncProgress?.let { progress ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Text(
+                            text = "Sync Progress",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        LinearProgressIndicator(
+                            progress = { progress.fraction },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = buildSyncProgressSummary(progress),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        if (progress.status.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = progress.status,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
             // Sync button
             Button(
                 onClick = {
                     if (fromPathUri != null && toPathUri != null) {
                         isSyncing = true
+                        syncProgress = SyncProgress(
+                            totalSystems = 0,
+                            completedSystems = 0,
+                            status = "Preparing sync"
+                        )
                         coroutineScope.launch {
-                            syncResult = GamelistCopier.copyGamelists(context, fromPathUri!!, toPathUri!!)
+                            syncResult = GamelistCopier.copyGamelists(
+                                context,
+                                fromPathUri!!,
+                                toPathUri!!
+                            ) { progress ->
+                                withContext(Dispatchers.Main) {
+                                    syncProgress = progress
+                                }
+                            }
+                            syncProgress = null
                             isSyncing = false
                         }
                     }
@@ -363,4 +420,25 @@ private fun buildCopyResultSummary(result: CopyGamelistsResult): String {
         appendLine()
         append(details)
     }.trim()
+}
+
+private fun buildSyncProgressSummary(progress: SyncProgress): String {
+    if (progress.totalSystems <= 0) {
+        return "Preparing systems..."
+    }
+
+    val currentSystem = progress.currentSystemName ?: "Finalizing"
+    val systemActionProgress = if (progress.currentSystemTotalActions > 0) {
+        "${progress.currentSystemCompletedActions}/${progress.currentSystemTotalActions}"
+    } else {
+        "calculating..."
+    }
+
+    return buildString {
+        append("Systems: ${progress.completedSystems}/${progress.totalSystems}")
+        append('\n')
+        append("Current: $currentSystem")
+        append('\n')
+        append("Actions: $systemActionProgress")
+    }
 }

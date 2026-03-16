@@ -43,13 +43,35 @@ data class MediaSyncAction(
     val actionType: MediaSyncActionType,
 )
 
+data class SyncProgress(
+    val totalSystems: Int,
+    val completedSystems: Int,
+    val currentSystemName: String? = null,
+    val currentSystemCompletedActions: Int = 0,
+    val currentSystemTotalActions: Int = 0,
+    val status: String = "",
+) {
+    val fraction: Float
+        get() {
+            if (totalSystems <= 0) return 0f
+            val currentSystemFraction = if (currentSystemTotalActions > 0) {
+                currentSystemCompletedActions.toFloat() / currentSystemTotalActions.toFloat()
+            } else {
+                0f
+            }
+            return ((completedSystems.toFloat() + currentSystemFraction) / totalSystems.toFloat())
+                .coerceIn(0f, 1f)
+        }
+}
+
 object GamelistCopier {
     private const val TAG = "GamelistCopier"
 
     suspend fun copyGamelists(
         context: Context,
         fromPathUri: String,
-        toPathUri: String
+        toPathUri: String,
+        onProgress: suspend (SyncProgress) -> Unit = {}
     ): CopyGamelistsResult = withContext(Dispatchers.IO) {
         try {
             val fromDocumentFile = DocumentFile.fromTreeUri(context, fromPathUri.toUri())
@@ -76,30 +98,48 @@ object GamelistCopier {
             }
 
             val systemDirs = gamelistsDir.listFiles()
-            Log.d(TAG, "Found ${systemDirs.size} system directories to process")
+            val directoriesToProcess = systemDirs.filter { it.isDirectory }
+            Log.d(TAG, "Found ${directoriesToProcess.size} system directories to process")
             val systemResults = mutableListOf<CopySystemResult>()
+            val totalSystems = directoriesToProcess.size
+            var completedSystems = 0
 
-            systemDirs.forEach { systemDir ->
-                if (systemDir.isDirectory) {
-                    val dirName = systemDir.name ?: "unknown"
-                    Log.d(TAG, "Processing system directory: $dirName")
-                    try {
-                        val result = processSystemDirectory(context, systemDir, toDocumentFile, downloadedMediaDir)
-                        systemResults += result
-                        if (result.success) {
-                            Log.d(TAG, "Successfully processed: $dirName")
-                        } else {
-                            Log.w(TAG, "Processed with failure: $dirName - ${result.message}")
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error processing system directory $dirName", e)
-                        systemResults += CopySystemResult(
-                            systemName = dirName,
-                            success = false,
-                            message = "Unexpected error: ${e.message ?: "unknown"}"
-                        )
+            directoriesToProcess.forEach { systemDir ->
+                val dirName = systemDir.name ?: "unknown"
+                Log.d(TAG, "Processing system directory: $dirName")
+                try {
+                    val result = processSystemDirectory(
+                        context = context,
+                        systemDir = systemDir,
+                        toDocumentFile = toDocumentFile,
+                        downloadedMediaDir = downloadedMediaDir,
+                        totalSystems = totalSystems,
+                        completedSystems = completedSystems,
+                        onProgress = onProgress
+                    )
+                    systemResults += result
+                    if (result.success) {
+                        Log.d(TAG, "Successfully processed: $dirName")
+                    } else {
+                        Log.w(TAG, "Processed with failure: $dirName - ${result.message}")
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing system directory $dirName", e)
+                    systemResults += CopySystemResult(
+                        systemName = dirName,
+                        success = false,
+                        message = "Unexpected error: ${e.message ?: "unknown"}"
+                    )
                 }
+
+                completedSystems++
+                onProgress(
+                    SyncProgress(
+                        totalSystems = totalSystems,
+                        completedSystems = completedSystems,
+                        status = if (completedSystems == totalSystems) "Sync complete" else "Completed $completedSystems of $totalSystems systems"
+                    )
+                )
             }
 
             Log.d(TAG, "Finished processing all system directories")
@@ -110,11 +150,14 @@ object GamelistCopier {
         }
     }
 
-    private fun processSystemDirectory(
+    private suspend fun processSystemDirectory(
         context: Context,
         systemDir: DocumentFile,
         toDocumentFile: DocumentFile,
-        downloadedMediaDir: DocumentFile?
+        downloadedMediaDir: DocumentFile?,
+        totalSystems: Int,
+        completedSystems: Int,
+        onProgress: suspend (SyncProgress) -> Unit
     ): CopySystemResult {
         val dirName = systemDir.name
         if (dirName == null) {
@@ -129,6 +172,16 @@ object GamelistCopier {
         }
 
         Log.d(TAG, "Found gamelist.xml in $dirName")
+        onProgress(
+            SyncProgress(
+                totalSystems = totalSystems,
+                completedSystems = completedSystems,
+                currentSystemName = dirName,
+                currentSystemCompletedActions = 0,
+                currentSystemTotalActions = 0,
+                status = "Preparing $dirName"
+            )
+        )
 
         // Find or create destination system directory
         var toSystemDir = toDocumentFile.findFile(dirName)
@@ -145,11 +198,28 @@ object GamelistCopier {
         val mediaSystemDir = downloadedMediaDir?.findFile(dirName)
         val copyMessage = if (mediaSystemDir != null) {
             Log.d(TAG, "Found media directory for $dirName")
-            processGamelistWithMedia(context, gamelistFile, toSystemDir, mediaSystemDir)
+            processGamelistWithMedia(
+                context = context,
+                gamelistFile = gamelistFile,
+                toSystemDir = toSystemDir,
+                mediaSystemDir = mediaSystemDir,
+                systemName = dirName,
+                totalSystems = totalSystems,
+                completedSystems = completedSystems,
+                onProgress = onProgress
+            )
         } else {
             Log.w(TAG, "No media directory found for $dirName")
             // Still copy the gamelist even without media
-            copyGamelistOnly(context, gamelistFile, toSystemDir)
+            copyGamelistOnly(
+                context = context,
+                gamelistFile = gamelistFile,
+                toSystemDir = toSystemDir,
+                systemName = dirName,
+                totalSystems = totalSystems,
+                completedSystems = completedSystems,
+                onProgress = onProgress
+            )
         }
 
         return when {
@@ -158,10 +228,14 @@ object GamelistCopier {
         }
     }
 
-    private fun copyGamelistOnly(
+    private suspend fun copyGamelistOnly(
         context: Context,
         gamelistFile: DocumentFile,
-        toSystemDir: DocumentFile
+        toSystemDir: DocumentFile,
+        systemName: String,
+        totalSystems: Int,
+        completedSystems: Int,
+        onProgress: suspend (SyncProgress) -> Unit
     ): String? {
         try {
             val content = context.contentResolver.openInputStream(gamelistFile.uri)?.use {
@@ -173,7 +247,28 @@ object GamelistCopier {
                 return null
             }
 
+            onProgress(
+                SyncProgress(
+                    totalSystems = totalSystems,
+                    completedSystems = completedSystems,
+                    currentSystemName = systemName,
+                    currentSystemCompletedActions = 0,
+                    currentSystemTotalActions = 1,
+                    status = "Writing gamelist for $systemName"
+                )
+            )
+
             return if (writeGamelist(context, toSystemDir, content)) {
+                onProgress(
+                    SyncProgress(
+                        totalSystems = totalSystems,
+                        completedSystems = completedSystems,
+                        currentSystemName = systemName,
+                        currentSystemCompletedActions = 1,
+                        currentSystemTotalActions = 1,
+                        status = "Finished $systemName"
+                    )
+                )
                 "Copied gamelist."
             } else {
                 null
@@ -184,11 +279,15 @@ object GamelistCopier {
         }
     }
 
-    private fun processGamelistWithMedia(
+    private suspend fun processGamelistWithMedia(
         context: Context,
         gamelistFile: DocumentFile,
         toSystemDir: DocumentFile,
-        mediaSystemDir: DocumentFile
+        mediaSystemDir: DocumentFile,
+        systemName: String,
+        totalSystems: Int,
+        completedSystems: Int,
+        onProgress: suspend (SyncProgress) -> Unit
     ): String? {
         // Ensure media directory structure exists
         var mediaDir = toSystemDir.findFile("media")
@@ -196,7 +295,7 @@ object GamelistCopier {
             mediaDir = toSystemDir.createDirectory("media")
             if (mediaDir == null) {
                 Log.e(TAG, "Failed to create media directory")
-                return copyGamelistOnly(context, gamelistFile, toSystemDir)
+                return copyGamelistOnly(context, gamelistFile, toSystemDir, systemName, totalSystems, completedSystems, onProgress)
             }
         }
 
@@ -205,7 +304,7 @@ object GamelistCopier {
             imageDir = mediaDir.createDirectory("image")
             if (imageDir == null) {
                 Log.e(TAG, "Failed to create image directory")
-                return copyGamelistOnly(context, gamelistFile, toSystemDir)
+                return copyGamelistOnly(context, gamelistFile, toSystemDir, systemName, totalSystems, completedSystems, onProgress)
             }
         }
 
@@ -214,7 +313,7 @@ object GamelistCopier {
             thumbnailDir = mediaDir.createDirectory("thumbnail")
             if (thumbnailDir == null) {
                 Log.e(TAG, "Failed to create thumbnail directory")
-                return copyGamelistOnly(context, gamelistFile, toSystemDir)
+                return copyGamelistOnly(context, gamelistFile, toSystemDir, systemName, totalSystems, completedSystems, onProgress)
             }
         }
 
@@ -234,24 +333,66 @@ object GamelistCopier {
 
         if (syncPlan == null) {
             Log.e(TAG, "Failed to parse and enrich gamelist")
-            return copyGamelistOnly(context, gamelistFile, toSystemDir)
+            return copyGamelistOnly(context, gamelistFile, toSystemDir, systemName, totalSystems, completedSystems, onProgress)
         }
+
+        val thumbnailSourceResolver = buildThumbnailSourceResolver(coversDir)
+        val imageSourceResolver = buildImageSourceResolver(fanartDir, screenshotsDir)
+        val thumbnailActions = planMediaSync(
+            desiredFileNames = syncPlan.desiredThumbnailFileNames,
+            sourceFileSizes = syncPlan.desiredThumbnailFileNames.associateWith { fileName -> thumbnailSourceResolver(fileName)?.length() },
+            existingFileSizes = listFilesByName(thumbnailDir).mapValues { (_, file) -> file.length() }
+        )
+        val imageActions = planMediaSync(
+            desiredFileNames = syncPlan.desiredImageFileNames,
+            sourceFileSizes = syncPlan.desiredImageFileNames.associateWith { fileName -> imageSourceResolver(fileName)?.length() },
+            existingFileSizes = listFilesByName(imageDir).mapValues { (_, file) -> file.length() }
+        )
+
+        val totalActions = thumbnailActions.size + imageActions.size + 1
+        var completedActions = 0
+
+        suspend fun report(status: String) {
+            onProgress(
+                SyncProgress(
+                    totalSystems = totalSystems,
+                    completedSystems = completedSystems,
+                    currentSystemName = systemName,
+                    currentSystemCompletedActions = completedActions,
+                    currentSystemTotalActions = totalActions,
+                    status = status
+                )
+            )
+        }
+
+        report("Syncing media for $systemName")
 
         val thumbnailStats = syncMediaDirectory(
             context = context,
             targetDir = thumbnailDir,
             desiredFileNames = syncPlan.desiredThumbnailFileNames,
-            sourceFileResolver = buildThumbnailSourceResolver(coversDir)
+            sourceFileResolver = thumbnailSourceResolver,
+            onActionFinished = {
+                completedActions++
+                report("Syncing media for $systemName")
+            }
         )
 
         val imageStats = syncMediaDirectory(
             context = context,
             targetDir = imageDir,
             desiredFileNames = syncPlan.desiredImageFileNames,
-            sourceFileResolver = buildImageSourceResolver(fanartDir, screenshotsDir)
+            sourceFileResolver = imageSourceResolver,
+            onActionFinished = {
+                completedActions++
+                report("Syncing media for $systemName")
+            }
         )
 
+        report("Writing gamelist for $systemName")
         val writeSucceeded = writeGamelist(context, toSystemDir, syncPlan.xmlContent)
+        completedActions++
+        report("Finished $systemName")
         val totalFailures = thumbnailStats.failed + imageStats.failed + if (writeSucceeded) 0 else 1
 
         return if (totalFailures == 0) {
@@ -354,11 +495,12 @@ object GamelistCopier {
         }
     }
 
-    private fun syncMediaDirectory(
+    private suspend fun syncMediaDirectory(
         context: Context,
         targetDir: DocumentFile,
         desiredFileNames: Set<String>,
-        sourceFileResolver: (String) -> DocumentFile?
+        sourceFileResolver: (String) -> DocumentFile?,
+        onActionFinished: suspend () -> Unit
     ): MediaSyncStats {
         var copied = 0
         var updated = 0
@@ -410,6 +552,7 @@ object GamelistCopier {
                     failed++
                 }
             }
+            onActionFinished()
         }
 
         return MediaSyncStats(
@@ -419,6 +562,17 @@ object GamelistCopier {
             skipped = skipped,
             failed = failed
         )
+    }
+
+    private fun listFilesByName(directory: DocumentFile): Map<String, DocumentFile> {
+        return try {
+            directory.listFiles()
+                .mapNotNull { file -> file.name?.let { name -> name to file } }
+                .toMap()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error listing destination files in ${directory.name}", e)
+            emptyMap()
+        }
     }
 
     internal fun planMediaSyncForTest(
