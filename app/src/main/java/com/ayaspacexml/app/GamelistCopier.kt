@@ -2,14 +2,10 @@ package com.ayaspacexml.app
 
 import android.content.Context
 import android.util.Log
-import android.util.Xml
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.xmlpull.v1.XmlPullParser
-import org.xmlpull.v1.XmlSerializer
-import java.io.StringWriter
 
 object GamelistCopier {
     private const val TAG = "GamelistCopier"
@@ -227,13 +223,6 @@ object GamelistCopier {
         thumbnailDir: DocumentFile
     ): String? {
         return try {
-            val parser = Xml.newPullParser()
-            val stringWriter = StringWriter()
-            val serializer = Xml.newSerializer()
-
-            serializer.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", true)
-            serializer.setOutput(stringWriter)
-
             val originalXml = context.contentResolver.openInputStream(gamelistFile.uri)?.use {
                 it.reader().readText()
             }
@@ -243,93 +232,38 @@ object GamelistCopier {
                 return null
             }
 
-            parser.setInput(originalXml.reader())
-            serializer.startDocument("UTF-8", true)
+            val coverFiles = fileMap(coversDir)
+            val fanartFiles = fileMap(fanartDir)
+            val screenshotFiles = fileMap(screenshotsDir)
 
-            var eventType = parser.eventType
-            var inGameTag = false
-            var gamePath: String? = null
-            var currentTag: String? = null
-            var gamesProcessed = 0
-
-            while (eventType != XmlPullParser.END_DOCUMENT) {
-                when (eventType) {
-                    XmlPullParser.START_DOCUMENT -> {
-                        // Already handled by serializer.startDocument
-                    }
-
-                    XmlPullParser.START_TAG -> {
-                        currentTag = parser.name
-                        serializer.startTag(parser.namespace, currentTag)
-
-                        // Copy attributes
-                        for (i in 0 until parser.attributeCount) {
-                            serializer.attribute(
-                                parser.getAttributeNamespace(i),
-                                parser.getAttributeName(i),
-                                parser.getAttributeValue(i)
-                            )
-                        }
-
-                        if (currentTag == "game") {
-                            inGameTag = true
-                            gamePath = null
-                        }
-                    }
-
-                    XmlPullParser.TEXT -> {
-                        val text = parser.text
-                        if (!text.isNullOrBlank()) {
-                            if (inGameTag && currentTag == "path") {
-                                gamePath = text.trim()
-                            }
-                            serializer.text(text)
-                        }
-                    }
-
-                    XmlPullParser.END_TAG -> {
-                        val tagName = parser.name
-
-                        if (tagName == "game" && inGameTag) {
-                            inGameTag = false
-                            gamePath?.let { path ->
-                                val gameFileName = extractGameFileName(path)
-                                copyMediaForGame(
-                                    context,
-                                    serializer,
-                                    gameFileName,
-                                    coversDir,
-                                    fanartDir,
-                                    screenshotsDir,
-                                    imageDir,
-                                    thumbnailDir
-                                )
-                                gamesProcessed++
-                            }
-                        }
-
-                        serializer.endTag(parser.namespace, tagName)
-                        currentTag = null
-                    }
-                }
-                eventType = parser.next()
+            GamelistTransform.enrich(originalXml) { gameFileName ->
+                copyMediaForGame(
+                    context = context,
+                    gameFileName = gameFileName,
+                    coverFiles = coverFiles,
+                    fanartFiles = fanartFiles,
+                    screenshotFiles = screenshotFiles,
+                    imageDir = imageDir,
+                    thumbnailDir = thumbnailDir
+                )
             }
-
-            serializer.endDocument()
-            Log.d(TAG, "Processed $gamesProcessed games")
-            stringWriter.toString()
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing and enriching gamelist", e)
             null
         }
     }
 
-    private fun extractGameFileName(path: String): String {
-        val filename = path.substringAfterLast('/')
-        // Remove any file extension (e.g., .zcci, .nds, .gba, etc.)
-        val extracted = filename.substringBeforeLast('.')
-        Log.d(TAG, "Extracted filename from path '$path': '$extracted'")
-        return extracted
+    private fun fileMap(directory: DocumentFile?): Map<String, DocumentFile> {
+        if (directory == null) return emptyMap()
+
+        return try {
+            directory.listFiles()
+                .mapNotNull { file -> file.name?.let { name -> name to file } }
+                .toMap()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error listing files for ${directory.name}", e)
+            emptyMap()
+        }
     }
 
     private fun writeGamelist(context: Context, toSystemDir: DocumentFile, xmlContent: String) {
@@ -363,86 +297,48 @@ object GamelistCopier {
 
     private fun copyMediaForGame(
         context: Context,
-        serializer: XmlSerializer,
         gameFileName: String,
-        coversDir: DocumentFile?,
-        fanartDir: DocumentFile?,
-        screenshotsDir: DocumentFile?,
+        coverFiles: Map<String, DocumentFile>,
+        fanartFiles: Map<String, DocumentFile>,
+        screenshotFiles: Map<String, DocumentFile>,
         imageDir: DocumentFile,
         thumbnailDir: DocumentFile
-    ) {
-        var mediaCopied = false
-
+    ): SelectedMedia {
         Log.d(TAG, "Looking for media for: $gameFileName")
 
-        // Copy cover to thumbnail
-        val coverFile = findMediaFile(coversDir, gameFileName)
-        if (coverFile != null) {
-            Log.d(TAG, "Found cover: ${coverFile.name}")
-            if (copyAndAddTag(context, coverFile, thumbnailDir, serializer, "thumbnail", "./media/thumbnail/")) {
-                mediaCopied = true
-            }
-        } else {
-            Log.d(TAG, "No cover found in ${coversDir?.name}")
-        }
+        val selectedMedia = MediaFileMatcher.selectMedia(
+            gameFileName = gameFileName,
+            coverFileNames = coverFiles.keys.toList(),
+            fanartFileNames = fanartFiles.keys.toList(),
+            screenshotFileNames = screenshotFiles.keys.toList()
+        )
 
-        // Copy fanart to image, fallback to screenshot
-        val fanartFile = findMediaFile(fanartDir, gameFileName)
-        val screenshotFile = if (fanartFile == null) findMediaFile(screenshotsDir, gameFileName) else null
-        val imageSource = fanartFile ?: screenshotFile
+        val copiedThumbnail = selectedMedia.thumbnailFileName
+            ?.let(coverFiles::get)
+            ?.takeIf { copyFile(context, it, thumbnailDir) }
+            ?.name
 
-        if (imageSource != null) {
-            Log.d(TAG, "Found image: ${imageSource.name} (from ${if (fanartFile != null) "fanart" else "screenshots"})")
-            if (copyAndAddTag(context, imageSource, imageDir, serializer, "image", "./media/image/")) {
-                mediaCopied = true
-            }
-        } else {
-            Log.d(TAG, "No fanart or screenshot found")
-        }
+        val copiedImage = selectedMedia.imageFileName
+            ?.let { fanartFiles[it] ?: screenshotFiles[it] }
+            ?.takeIf { copyFile(context, it, imageDir) }
+            ?.name
 
-        if (mediaCopied) {
-            Log.d(TAG, "Copied media for game: $gameFileName")
-        } else {
+        if (copiedThumbnail == null && copiedImage == null) {
             Log.w(TAG, "No media copied for game: $gameFileName")
+        } else {
+            Log.d(TAG, "Copied media for game: $gameFileName")
         }
+
+        return SelectedMedia(
+            thumbnailFileName = copiedThumbnail,
+            imageFileName = copiedImage
+        )
     }
 
-    private fun findMediaFile(directory: DocumentFile?, gameFileName: String): DocumentFile? {
-        if (directory == null) {
-            Log.d(TAG, "Directory is null")
-            return null
-        }
-
-        return try {
-            val files = directory.listFiles()
-            Log.d(TAG, "Searching ${files.size} files in ${directory.name} for: $gameFileName")
-
-            val found = files.find {
-                val matches = it.name?.startsWith(gameFileName) == true
-                if (matches) {
-                    Log.d(TAG, "Match: ${it.name}")
-                }
-                matches
-            }
-
-            if (found == null) {
-                Log.d(TAG, "No match found. First 3 files: ${files.take(3).mapNotNull { it.name }.joinToString()}")
-            }
-
-            found
-        } catch (e: Exception) {
-            Log.e(TAG, "Error finding media file for $gameFileName", e)
-            null
-        }
-    }
-
-    private fun copyAndAddTag(
+    private fun copyFile(
         context: Context,
         sourceFile: DocumentFile,
-        targetDir: DocumentFile,
-        serializer: XmlSerializer,
-        tagName: String,
-        pathPrefix: String
+        targetDir: DocumentFile
     ): Boolean {
         return try {
             val fileName = sourceFile.name
@@ -479,13 +375,9 @@ object GamelistCopier {
                 return false
             }
 
-            serializer.startTag(null, tagName)
-            serializer.text("$pathPrefix${newFile.name}")
-            serializer.endTag(null, tagName)
-
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Error copying and adding tag for $tagName", e)
+            Log.e(TAG, "Error copying file ${sourceFile.name}", e)
             false
         }
     }
