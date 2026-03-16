@@ -11,6 +11,7 @@ data class CopySystemResult(
     val systemName: String,
     val success: Boolean,
     val message: String,
+    val metrics: MediaSyncStats = MediaSyncStats(),
 )
 
 data class CopyGamelistsResult(
@@ -19,6 +20,7 @@ data class CopyGamelistsResult(
     val systemsSucceeded: Int,
     val systemsFailed: Int,
     val systemResults: List<CopySystemResult>,
+    val metrics: MediaSyncStats,
     val message: String,
 )
 
@@ -41,6 +43,11 @@ enum class MediaSyncActionType {
 data class MediaSyncAction(
     val fileName: String,
     val actionType: MediaSyncActionType,
+)
+
+data class SystemSyncOutcome(
+    val message: String,
+    val metrics: MediaSyncStats = MediaSyncStats(),
 )
 
 data class SyncProgress(
@@ -224,7 +231,12 @@ object GamelistCopier {
 
         return when {
             copyMessage == null -> CopySystemResult(dirName, false, "Failed to write gamelist.")
-            else -> CopySystemResult(dirName, true, copyMessage)
+            else -> CopySystemResult(
+                systemName = dirName,
+                success = true,
+                message = copyMessage.message,
+                metrics = copyMessage.metrics
+            )
         }
     }
 
@@ -236,7 +248,7 @@ object GamelistCopier {
         totalSystems: Int,
         completedSystems: Int,
         onProgress: suspend (SyncProgress) -> Unit
-    ): String? {
+    ): SystemSyncOutcome? {
         try {
             val content = context.contentResolver.openInputStream(gamelistFile.uri)?.use {
                 it.reader().readText()
@@ -269,7 +281,7 @@ object GamelistCopier {
                         status = "Finished $systemName"
                     )
                 )
-                "Copied gamelist."
+                SystemSyncOutcome("Synced gamelist only.")
             } else {
                 null
             }
@@ -288,7 +300,7 @@ object GamelistCopier {
         totalSystems: Int,
         completedSystems: Int,
         onProgress: suspend (SyncProgress) -> Unit
-    ): String? {
+    ): SystemSyncOutcome? {
         // Ensure media directory structure exists
         var mediaDir = toSystemDir.findFile("media")
         if (mediaDir == null) {
@@ -395,8 +407,13 @@ object GamelistCopier {
         report("Finished $systemName")
         val totalFailures = thumbnailStats.failed + imageStats.failed + if (writeSucceeded) 0 else 1
 
+        val combinedStats = combineMediaSyncStats(thumbnailStats, imageStats)
+
         return if (totalFailures == 0) {
-            "Synced gamelist and media. ${formatMediaSyncStats(thumbnailStats, imageStats)}"
+            SystemSyncOutcome(
+                message = "Synced gamelist and media.",
+                metrics = combinedStats
+            )
         } else {
             null
         }
@@ -671,15 +688,14 @@ object GamelistCopier {
         return copyFile(context, sourceFile, targetDir)
     }
 
-    private fun formatMediaSyncStats(thumbnailStats: MediaSyncStats, imageStats: MediaSyncStats): String {
-        val combined = MediaSyncStats(
+    private fun combineMediaSyncStats(thumbnailStats: MediaSyncStats, imageStats: MediaSyncStats): MediaSyncStats {
+        return MediaSyncStats(
             copied = thumbnailStats.copied + imageStats.copied,
             updated = thumbnailStats.updated + imageStats.updated,
             deleted = thumbnailStats.deleted + imageStats.deleted,
             skipped = thumbnailStats.skipped + imageStats.skipped,
             failed = thumbnailStats.failed + imageStats.failed
         )
-        return "Added ${combined.copied}, updated ${combined.updated}, deleted ${combined.deleted}, skipped ${combined.skipped}."
     }
 
     internal fun buildCopyResultForTest(systemResults: List<CopySystemResult>): CopyGamelistsResult =
@@ -688,9 +704,18 @@ object GamelistCopier {
     private fun buildCopyResult(systemResults: List<CopySystemResult>): CopyGamelistsResult {
         val succeeded = systemResults.count { it.success }
         val failed = systemResults.size - succeeded
+        val combinedMetrics = systemResults.fold(MediaSyncStats()) { acc, result ->
+            MediaSyncStats(
+                copied = acc.copied + result.metrics.copied,
+                updated = acc.updated + result.metrics.updated,
+                deleted = acc.deleted + result.metrics.deleted,
+                skipped = acc.skipped + result.metrics.skipped,
+                failed = acc.failed + result.metrics.failed
+            )
+        }
         val message = when {
             systemResults.isEmpty() -> "No system directories found."
-            failed == 0 -> "Copied ${systemResults.size} system(s) successfully."
+            failed == 0 -> "Synced ${systemResults.size} system(s) successfully."
             succeeded == 0 -> "Sync failed for all $failed system(s)."
             else -> "Synced $succeeded system(s); $failed failed."
         }
@@ -701,6 +726,7 @@ object GamelistCopier {
             systemsSucceeded = succeeded,
             systemsFailed = failed,
             systemResults = systemResults,
+            metrics = combinedMetrics,
             message = message
         )
     }
@@ -712,6 +738,7 @@ object GamelistCopier {
             systemsSucceeded = 0,
             systemsFailed = 0,
             systemResults = emptyList(),
+            metrics = MediaSyncStats(),
             message = message
         )
 }

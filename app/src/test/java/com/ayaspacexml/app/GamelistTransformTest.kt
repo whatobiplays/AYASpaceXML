@@ -155,7 +155,7 @@ class GamelistTransformTest {
         assertEquals(2, result.systemsProcessed)
         assertEquals(2, result.systemsSucceeded)
         assertEquals(0, result.systemsFailed)
-        assertEquals("Copied 2 system(s) successfully.", result.message)
+        assertEquals("Synced 2 system(s) successfully.", result.message)
     }
 
     @Test

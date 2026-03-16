@@ -82,6 +82,7 @@ fun MainScreen(prefs: SharedPreferences) {
     var sourceChecked by remember { mutableStateOf(false) }
     var syncProgress by remember { mutableStateOf<SyncProgress?>(null) }
     var syncResult by remember { mutableStateOf<CopyGamelistsResult?>(null) }
+    var showSystemDetails by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     suspend fun validateSourceFolder(context: Context, uriString: String?): Boolean {
@@ -285,6 +286,7 @@ fun MainScreen(prefs: SharedPreferences) {
                                     syncProgress = progress
                                 }
                             }
+                            showSystemDetails = false
                             syncProgress = null
                             isSyncing = false
                         }
@@ -308,7 +310,10 @@ fun MainScreen(prefs: SharedPreferences) {
 
     syncResult?.let { result ->
         AlertDialog(
-            onDismissRequest = { syncResult = null },
+            onDismissRequest = {
+                syncResult = null
+                showSystemDetails = false
+            },
             title = {
                 Text(if (result.success) "Sync Complete" else "Sync Summary")
             },
@@ -319,11 +324,36 @@ fun MainScreen(prefs: SharedPreferences) {
                         .heightIn(max = 320.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    Text(buildCopyResultSummary(result))
+                    Column {
+                        Text(
+                            text = buildSyncResultOverview(result),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        TextButton(
+                            onClick = { showSystemDetails = !showSystemDetails },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(if (showSystemDetails) "Hide system details" else "Show system details")
+                        }
+
+                        if (showSystemDetails) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            result.systemResults.forEach { systemResult ->
+                                SystemResultSection(systemResult)
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { syncResult = null }) {
+                TextButton(onClick = {
+                    syncResult = null
+                    showSystemDetails = false
+                }) {
                     Text("Dismiss")
                 }
             }
@@ -401,16 +431,31 @@ private fun FolderCard(
     }
 }
 
-private fun buildCopyResultSummary(result: CopyGamelistsResult): String {
-    if (result.systemResults.isEmpty()) {
-        return result.message
+@Composable
+private fun SystemResultSection(result: CopySystemResult) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "${if (result.success) "OK" else "Failed"}: ${result.systemName}",
+                style = MaterialTheme.typography.titleSmall,
+                color = if (result.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(text = result.message, style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "Added: ${result.metrics.copied}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Updated: ${result.metrics.updated}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Deleted: ${result.metrics.deleted}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Skipped: ${result.metrics.skipped}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Failed actions: ${result.metrics.failed}", style = MaterialTheme.typography.bodySmall)
+        }
     }
+}
 
-    val details = result.systemResults.joinToString("\n") { systemResult ->
-        val status = if (systemResult.success) "OK" else "Failed"
-        "$status: ${systemResult.systemName} - ${systemResult.message}"
-    }
-
+private fun buildSyncResultOverview(result: CopyGamelistsResult): String {
     return buildString {
         appendLine(result.message)
         appendLine()
@@ -418,7 +463,11 @@ private fun buildCopyResultSummary(result: CopyGamelistsResult): String {
         appendLine("Succeeded: ${result.systemsSucceeded}")
         appendLine("Failed: ${result.systemsFailed}")
         appendLine()
-        append(details)
+        appendLine("Added: ${result.metrics.copied}")
+        appendLine("Updated: ${result.metrics.updated}")
+        appendLine("Deleted: ${result.metrics.deleted}")
+        appendLine("Skipped: ${result.metrics.skipped}")
+        append("Failed actions: ${result.metrics.failed}")
     }.trim()
 }
 
