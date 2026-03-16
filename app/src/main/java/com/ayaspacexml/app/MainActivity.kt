@@ -334,33 +334,41 @@ fun MainScreen(prefs: SharedPreferences) {
                             Spacer(modifier = Modifier.height(8.dp))
 
                             Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 220.dp)
-                                    .verticalScroll(rememberScrollState())
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                availableSystems.forEach { systemName ->
+                                availableSystems.chunked(2).forEach { rowSystems ->
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                        .padding(vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
-                                        Checkbox(
-                                            checked = systemName in selectedSystems,
-                                            enabled = !isSyncing,
-                                            onCheckedChange = { checked ->
-                                                selectedSystems = if (checked) {
-                                                    selectedSystems + systemName
-                                                } else {
-                                                    selectedSystems - systemName
-                                                }
+                                        rowSystems.forEach { systemName ->
+                                            Row(
+                                                modifier = Modifier.weight(1f),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Checkbox(
+                                                    checked = systemName in selectedSystems,
+                                                    enabled = !isSyncing,
+                                                    onCheckedChange = { checked ->
+                                                        selectedSystems = if (checked) {
+                                                            selectedSystems + systemName
+                                                        } else {
+                                                            selectedSystems - systemName
+                                                        }
+                                                    }
+                                                )
+                                                Text(
+                                                    text = systemName,
+                                                    style = MaterialTheme.typography.bodyMedium
+                                                )
                                             }
-                                        )
-                                        Text(
-                                            text = systemName,
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
+                                        }
+
+                                        if (rowSystems.size == 1) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
                                     }
                                 }
                             }
@@ -455,6 +463,16 @@ fun MainScreen(prefs: SharedPreferences) {
                 Text(
                     text = if (isSyncing) "Syncing..." else "Sync Gamelists",
                     style = MaterialTheme.typography.titleMedium
+                )
+            }
+
+            if (syncScopeMode == SyncScopeMode.SELECTED && selectedSystems.isEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Select at least one system to enable syncing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center
                 )
             }
 
