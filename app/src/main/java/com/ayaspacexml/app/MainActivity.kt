@@ -2,6 +2,7 @@ package com.ayaspacexml.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -16,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -59,9 +61,20 @@ fun getDisplayNameFromUri(uriString: String?): String {
     }
 }
 
+private data class FolderCardModel(
+    val title: String,
+    val description: String,
+    val selectedPath: String,
+    val buttonLabel: String,
+    val onSelect: () -> Unit,
+    val footer: (@Composable () -> Unit)? = null,
+)
+
 @Composable
 fun MainScreen(prefs: SharedPreferences) {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     var fromPathUri by remember { mutableStateOf(prefs.getString("from_path", null)) }
     var toPathUri by remember { mutableStateOf(prefs.getString("to_path", null)) }
     var isSyncing by remember { mutableStateOf(false) }
@@ -106,8 +119,6 @@ fun MainScreen(prefs: SharedPreferences) {
                 coroutineScope.launch {
                     val valid = validateSourceFolder(context, fromPathUri)
                     isSourceValid = valid
-                    if (!valid) {
-                    }
                 }
             }
         }
@@ -127,6 +138,33 @@ fun MainScreen(prefs: SharedPreferences) {
                 prefs.edit { putString("to_path", toPathUri) }
             }
         }
+    )
+
+    val folderCards = listOf(
+        FolderCardModel(
+            title = "Source Folder",
+            description = "Choose the folder containing your 'gamelists' and 'downloaded_media' directories (e.g., ES-DE folder)",
+            selectedPath = getDisplayNameFromUri(fromPathUri),
+            buttonLabel = "Select Source",
+            onSelect = { fromPathLauncher.launch(null) },
+            footer = {
+                if (fromPathUri != null && !isSourceValid && sourceChecked) {
+                    Text(
+                        text = "⚠ Folder must contain 'gamelists' and 'downloaded_media'.",
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        ),
+        FolderCardModel(
+            title = "Destination Folder",
+            description = "Choose the folder with your system subdirectories (e.g., 'nds', '3ds'). Gamelists will be synced into each system folder.",
+            selectedPath = getDisplayNameFromUri(toPathUri),
+            buttonLabel = "Select Destination",
+            onSelect = { toPathLauncher.launch(null) }
+        )
     )
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -151,127 +189,36 @@ fun MainScreen(prefs: SharedPreferences) {
                 modifier = Modifier.padding(bottom = 32.dp)
             )
 
-            // Source
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 20.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
-                    Text(
-                        text = "Source Folder",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Choose the folder containing your 'gamelists' and 'downloaded_media' directories (e.g., ES-DE folder)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp)
-                            )
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            text = getDisplayNameFromUri(fromPathUri),
-                            style = MaterialTheme.typography.bodyLarge,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = { fromPathLauncher.launch(null) },
-                        modifier = Modifier.widthIn(min = 160.dp)
-                    ) {
-                        Text("Select Source")
-                    }
-
-                    if (fromPathUri != null && !isSourceValid && sourceChecked) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "⚠ Folder must contain 'gamelists' and 'downloaded_media'.",
-                            color = MaterialTheme.colorScheme.error,
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.bodySmall
+                    folderCards.forEach { card ->
+                        FolderCard(
+                            title = card.title,
+                            description = card.description,
+                            selectedPath = card.selectedPath,
+                            buttonLabel = card.buttonLabel,
+                            onSelect = card.onSelect,
+                            modifier = Modifier.weight(1f),
+                            footer = card.footer
                         )
                     }
                 }
-            }
-
-            // Destination
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 32.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "Destination Folder",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.primary
+            } else {
+                folderCards.forEachIndexed { index, card ->
+                    FolderCard(
+                        title = card.title,
+                        description = card.description,
+                        selectedPath = card.selectedPath,
+                        buttonLabel = card.buttonLabel,
+                        onSelect = card.onSelect,
+                        modifier = Modifier.padding(bottom = if (index == folderCards.lastIndex) 32.dp else 20.dp),
+                        footer = card.footer
                     )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Choose the folder with your system subdirectories (e.g., 'nds', '3ds'). Gamelists will be synced into each system folder.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp)
-                            )
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            text = getDisplayNameFromUri(toPathUri),
-                            style = MaterialTheme.typography.bodyLarge,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = { toPathLauncher.launch(null) },
-                        modifier = Modifier.widthIn(min = 160.dp)
-                    ) {
-                        Text("Select Destination")
-                    }
                 }
             }
 
@@ -324,6 +271,76 @@ fun MainScreen(prefs: SharedPreferences) {
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun FolderCard(
+    title: String,
+    description: String,
+    selectedPath: String,
+    buttonLabel: String,
+    onSelect: () -> Unit,
+    modifier: Modifier = Modifier,
+    footer: @Composable (() -> Unit)? = null
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    .padding(12.dp)
+            ) {
+                Text(
+                    text = selectedPath,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = onSelect,
+                modifier = Modifier.widthIn(min = 160.dp)
+            ) {
+                Text(buttonLabel)
+            }
+
+            footer?.let {
+                Spacer(modifier = Modifier.height(10.dp))
+                it()
+            }
+        }
     }
 }
 
