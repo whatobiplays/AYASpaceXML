@@ -2,9 +2,9 @@ package com.ayaspacexml.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -60,14 +61,38 @@ fun getDisplayNameFromUri(uriString: String?): String {
     }
 }
 
+private data class FolderCardModel(
+    val title: String,
+    val description: String,
+    val selectedPath: String,
+    val buttonLabel: String,
+    val onSelect: () -> Unit,
+    val enabled: Boolean = true,
+    val footer: (@Composable () -> Unit)? = null,
+)
+
+private enum class SyncScopeMode {
+    ALL,
+    SELECTED,
+}
+
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun MainScreen(prefs: SharedPreferences) {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     var fromPathUri by remember { mutableStateOf(prefs.getString("from_path", null)) }
     var toPathUri by remember { mutableStateOf(prefs.getString("to_path", null)) }
-    var isCopying by remember { mutableStateOf(false) }
+    var isSyncing by remember { mutableStateOf(false) }
     var isSourceValid by remember { mutableStateOf(false) }
     var sourceChecked by remember { mutableStateOf(false) }
+    var availableSystems by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selectedSystems by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var syncScopeMode by remember { mutableStateOf(SyncScopeMode.ALL) }
+    var syncProgress by remember { mutableStateOf<SyncProgress?>(null) }
+    var syncResult by remember { mutableStateOf<CopyGamelistsResult?>(null) }
+    var showSystemDetails by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     suspend fun validateSourceFolder(context: Context, uriString: String?): Boolean {
@@ -80,11 +105,29 @@ fun MainScreen(prefs: SharedPreferences) {
         }
     }
 
+    suspend fun loadSourceSystems(context: Context, uriString: String?): List<String> {
+        if (uriString == null) return emptyList()
+        return withContext(Dispatchers.IO) {
+            val tree = DocumentFile.fromTreeUri(context, uriString.toUri()) ?: return@withContext emptyList()
+            val gamelistsDir = tree.findFile("gamelists") ?: return@withContext emptyList()
+            gamelistsDir.listFiles()
+                .filter { it.isDirectory }
+                .mapNotNull { it.name }
+                .sortedBy { it.lowercase() }
+        }
+    }
+
     // Validate saved folder automatically on launch
     LaunchedEffect(fromPathUri) {
         if (fromPathUri != null && !sourceChecked) {
             val valid = validateSourceFolder(context, fromPathUri)
             isSourceValid = valid
+            availableSystems = if (valid) {
+                loadSourceSystems(context, fromPathUri)
+            } else {
+                emptyList()
+            }
+            selectedSystems = availableSystems.toSet()
             sourceChecked = true
         }
     }
@@ -106,19 +149,13 @@ fun MainScreen(prefs: SharedPreferences) {
                 coroutineScope.launch {
                     val valid = validateSourceFolder(context, fromPathUri)
                     isSourceValid = valid
-                    if (!valid) {
-                        Toast.makeText(
-                            context,
-                            "Selected folder must contain 'gamelists' and 'downloaded_media'.",
-                            Toast.LENGTH_LONG
-                        ).show()
+                    availableSystems = if (valid) {
+                        loadSourceSystems(context, fromPathUri)
                     } else {
-                        Toast.makeText(
-                            context,
-                            "Valid source folder selected.",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        emptyList()
                     }
+                    selectedSystems = availableSystems.toSet()
+                    syncScopeMode = SyncScopeMode.ALL
                 }
             }
         }
@@ -140,6 +177,35 @@ fun MainScreen(prefs: SharedPreferences) {
         }
     )
 
+    val folderCards = listOf(
+        FolderCardModel(
+            title = "Source Folder",
+            description = "Choose the folder containing your 'gamelists' and 'downloaded_media' directories (e.g., ES-DE folder)",
+            selectedPath = getDisplayNameFromUri(fromPathUri),
+            buttonLabel = "Select Source",
+            onSelect = { fromPathLauncher.launch(null) },
+            enabled = !isSyncing,
+            footer = {
+                if (fromPathUri != null && !isSourceValid && sourceChecked) {
+                    Text(
+                        text = "⚠ Folder must contain 'gamelists' and 'downloaded_media'.",
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        ),
+        FolderCardModel(
+            title = "Destination Folder",
+            description = "Choose the folder with your system subdirectories (e.g., 'nds', '3ds'). Gamelists will be synced into each system folder.",
+            selectedPath = getDisplayNameFromUri(toPathUri),
+            buttonLabel = "Select Destination",
+            onSelect = { toPathLauncher.launch(null) },
+            enabled = !isSyncing
+        )
+    )
+
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Column(
             modifier = Modifier
@@ -156,165 +222,446 @@ fun MainScreen(prefs: SharedPreferences) {
             )
 
             Text(
-                text = "Copy ES-DE 'gamelist.xml' files and media assets ('image', 'thumbnail') to enable full AYASpace compatibility.",
+                text = "Sync ES-DE 'gamelist.xml' files and media assets ('image', 'thumbnail') to enable full AYASpace compatibility.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 32.dp)
             )
 
-            // Source
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 20.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
-                    Text(
-                        text = "Source Folder",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.primary
+                    folderCards.forEach { card ->
+                        FolderCard(
+                            title = card.title,
+                            description = card.description,
+                            selectedPath = card.selectedPath,
+                            buttonLabel = card.buttonLabel,
+                            onSelect = card.onSelect,
+                            enabled = card.enabled,
+                            modifier = Modifier.weight(1f),
+                            footer = card.footer
+                        )
+                    }
+                }
+            } else {
+                folderCards.forEachIndexed { index, card ->
+                    FolderCard(
+                        title = card.title,
+                        description = card.description,
+                        selectedPath = card.selectedPath,
+                        buttonLabel = card.buttonLabel,
+                        onSelect = card.onSelect,
+                        enabled = card.enabled,
+                        modifier = Modifier.padding(bottom = if (index == folderCards.lastIndex) 32.dp else 20.dp),
+                        footer = card.footer
                     )
+                }
+            }
 
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Choose the folder containing your 'gamelists' and 'downloaded_media' directories (e.g., ES-DE folder)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp)
-                            )
-                            .padding(12.dp)
-                    ) {
+            if (isSourceValid && availableSystems.isNotEmpty()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
                         Text(
-                            text = getDisplayNameFromUri(fromPathUri),
-                            style = MaterialTheme.typography.bodyLarge,
-                            textAlign = TextAlign.Center,
+                            text = "Systems to Sync",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        SingleChoiceSegmentedButtonRow(
                             modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+                        ) {
+                            SegmentedButton(
+                                selected = syncScopeMode == SyncScopeMode.ALL,
+                                enabled = !isSyncing,
+                                onClick = {
+                                    syncScopeMode = SyncScopeMode.ALL
+                                    selectedSystems = availableSystems.toSet()
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
+                            ) {
+                                Text("All Systems")
+                            }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                            SegmentedButton(
+                                selected = syncScopeMode == SyncScopeMode.SELECTED,
+                                enabled = !isSyncing,
+                                onClick = {
+                                    syncScopeMode = SyncScopeMode.SELECTED
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
+                            ) {
+                                Text("Choose Systems")
+                            }
+                        }
 
-                    Button(
-                        onClick = { fromPathLauncher.launch(null) },
-                        modifier = Modifier.widthIn(min = 160.dp)
-                    ) {
-                        Text("Select Source")
-                    }
+                        if (syncScopeMode == SyncScopeMode.SELECTED) {
+                            Spacer(modifier = Modifier.height(16.dp))
 
-                    if (fromPathUri != null && !isSourceValid && sourceChecked) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "⚠ Folder must contain 'gamelists' and 'downloaded_media'.",
-                            color = MaterialTheme.colorScheme.error,
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                TextButton(
+                                    enabled = !isSyncing,
+                                    onClick = { selectedSystems = availableSystems.toSet() },
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text("Select All")
+                                }
+
+                                TextButton(
+                                    enabled = !isSyncing,
+                                    onClick = { selectedSystems = emptySet() },
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text("Deselect All")
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Column(
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                availableSystems.chunked(2).forEach { rowSystems ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        rowSystems.forEach { systemName ->
+                                            Row(
+                                                modifier = Modifier.weight(1f),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Checkbox(
+                                                    checked = systemName in selectedSystems,
+                                                    enabled = !isSyncing,
+                                                    onCheckedChange = { checked ->
+                                                        selectedSystems = if (checked) {
+                                                            selectedSystems + systemName
+                                                        } else {
+                                                            selectedSystems - systemName
+                                                        }
+                                                    }
+                                                )
+                                                Text(
+                                                    text = systemName,
+                                                    style = MaterialTheme.typography.bodyMedium
+                                                )
+                                            }
+                                        }
+
+                                        if (rowSystems.size == 1) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            // Destination
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 32.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+            syncProgress?.let { progress ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
-                    Text(
-                        text = "Destination Folder",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Choose the folder with your system subdirectories (e.g., 'nds', '3ds'). Gamelists will be copied into each system folder.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp)
-                            )
-                            .padding(12.dp)
-                    ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
                         Text(
-                            text = getDisplayNameFromUri(toPathUri),
-                            style = MaterialTheme.typography.bodyLarge,
-                            textAlign = TextAlign.Center,
+                            text = "Sync Progress",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        LinearProgressIndicator(
+                            progress = { progress.fraction },
                             modifier = Modifier.fillMaxWidth()
                         )
-                    }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
-                    Button(
-                        onClick = { toPathLauncher.launch(null) },
-                        modifier = Modifier.widthIn(min = 160.dp)
-                    ) {
-                        Text("Select Destination")
+                        Text(
+                            text = buildSyncProgressSummary(progress),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        if (progress.status.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = progress.status,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
 
-            // Copy button
+            // Sync button
             Button(
                 onClick = {
                     if (fromPathUri != null && toPathUri != null) {
-                        isCopying = true
-                        coroutineScope.launch {
-                            GamelistCopier.copyGamelists(context, fromPathUri!!, toPathUri!!)
-                            isCopying = false
-                            Toast.makeText(
-                                context,
-                                "Gamelists copied successfully!",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                        isSyncing = true
+                            syncProgress = SyncProgress(
+                                totalSystems = 0,
+                                completedSystems = 0,
+                                status = "Preparing sync"
+                            )
+                            coroutineScope.launch {
+                                val systemsToSync = when (syncScopeMode) {
+                                    SyncScopeMode.ALL -> null
+                                    SyncScopeMode.SELECTED -> selectedSystems
+                                }
+                                syncResult = GamelistCopier.copyGamelists(
+                                    context,
+                                    fromPathUri!!,
+                                    toPathUri!!,
+                                    selectedSystems = systemsToSync
+                                ) { progress ->
+                                    withContext(Dispatchers.Main) {
+                                        syncProgress = progress
+                                }
+                            }
+                            showSystemDetails = false
+                            syncProgress = null
+                            isSyncing = false
                         }
                     }
                 },
-                enabled = fromPathUri != null && toPathUri != null && !isCopying && isSourceValid,
+                enabled = fromPathUri != null &&
+                    toPathUri != null &&
+                    !isSyncing &&
+                    isSourceValid &&
+                    (syncScopeMode == SyncScopeMode.ALL || selectedSystems.isNotEmpty()),
                 modifier = Modifier
                     .fillMaxWidth(0.7f)
                     .height(56.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text(
-                    text = if (isCopying) "Copying..." else "Copy Gamelists",
+                    text = if (isSyncing) "Syncing..." else "Sync Gamelists",
                     style = MaterialTheme.typography.titleMedium
+                )
+            }
+
+            if (syncScopeMode == SyncScopeMode.SELECTED && selectedSystems.isEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Select at least one system to enable syncing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center
                 )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
         }
+    }
+
+    syncResult?.let { result ->
+        AlertDialog(
+            onDismissRequest = {
+                syncResult = null
+                showSystemDetails = false
+            },
+            title = {
+                Text(if (result.success) "Sync Complete" else "Sync Summary")
+            },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Column {
+                        Text(
+                            text = buildSyncResultOverview(result),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        TextButton(
+                            onClick = { showSystemDetails = !showSystemDetails },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(if (showSystemDetails) "Hide system details" else "Show system details")
+                        }
+
+                        if (showSystemDetails) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            result.systemResults.forEach { systemResult ->
+                                SystemResultSection(systemResult)
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    syncResult = null
+                    showSystemDetails = false
+                }) {
+                    Text("Dismiss")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun FolderCard(
+    title: String,
+    description: String,
+    selectedPath: String,
+    buttonLabel: String,
+    onSelect: () -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    footer: @Composable (() -> Unit)? = null
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    .padding(12.dp)
+            ) {
+                Text(
+                    text = selectedPath,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = onSelect,
+                enabled = enabled,
+                modifier = Modifier.widthIn(min = 160.dp)
+            ) {
+                Text(buttonLabel)
+            }
+
+            footer?.let {
+                Spacer(modifier = Modifier.height(10.dp))
+                it()
+            }
+        }
+    }
+}
+
+@Composable
+private fun SystemResultSection(result: CopySystemResult) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "${if (result.success) "OK" else "Failed"}: ${result.systemName}",
+                style = MaterialTheme.typography.titleSmall,
+                color = if (result.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(text = result.message, style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "Added: ${result.metrics.copied}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Updated: ${result.metrics.updated}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Deleted: ${result.metrics.deleted}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Skipped: ${result.metrics.skipped}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Failed actions: ${result.metrics.failed}", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+private fun buildSyncResultOverview(result: CopyGamelistsResult): String {
+    return buildString {
+        appendLine(result.message)
+        appendLine()
+        appendLine("Processed: ${result.systemsProcessed}")
+        appendLine("Succeeded: ${result.systemsSucceeded}")
+        appendLine("Failed: ${result.systemsFailed}")
+        appendLine()
+        appendLine("Added: ${result.metrics.copied}")
+        appendLine("Updated: ${result.metrics.updated}")
+        appendLine("Deleted: ${result.metrics.deleted}")
+        appendLine("Skipped: ${result.metrics.skipped}")
+        append("Failed actions: ${result.metrics.failed}")
+    }.trim()
+}
+
+private fun buildSyncProgressSummary(progress: SyncProgress): String {
+    if (progress.totalSystems <= 0) {
+        return "Preparing systems..."
+    }
+
+    val currentSystem = progress.currentSystemName ?: "Finalizing"
+    val systemActionProgress = if (progress.currentSystemTotalActions > 0) {
+        "${progress.currentSystemCompletedActions}/${progress.currentSystemTotalActions}"
+    } else {
+        "calculating..."
+    }
+
+    return buildString {
+        append("Systems: ${progress.completedSystems}/${progress.totalSystems}")
+        append('\n')
+        append("Current: $currentSystem")
+        append('\n')
+        append("Actions: $systemActionProgress")
     }
 }
