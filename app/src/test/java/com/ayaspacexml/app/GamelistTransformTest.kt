@@ -10,23 +10,23 @@ class GamelistTransformTest {
     @Test
     fun `findBestMatch prefers exact stem over prefix matches`() {
         val result = MediaFileMatcher.findBestMatch(
-            gameFileName = "Mario Kart DS",
+            gameFileName = "Ultimate Battles DS",
             availableFileNames = listOf(
-                "Mario Kart DS Deluxe.png",
-                "Mario Kart DS.png"
+                "Ultimate Battles DS Deluxe.png",
+                "Ultimate Battles DS.png"
             )
         )
 
-        assertEquals("Mario Kart DS.png", result)
+        assertEquals("Ultimate Battles DS.png", result)
     }
 
     @Test
     fun `findBestMatch rejects ambiguous prefix matches`() {
         val result = MediaFileMatcher.findBestMatch(
-            gameFileName = "Pokemon",
+            gameFileName = "Ultimate",
             availableFileNames = listOf(
-                "Pokemon Blue.png",
-                "Pokemon Red.png"
+                "Ultimate Blue.png",
+                "Ultimate Red.png"
             )
         )
 
@@ -36,14 +36,14 @@ class GamelistTransformTest {
     @Test
     fun `selectMedia falls back to screenshot when fanart is missing`() {
         val result = MediaFileMatcher.selectMedia(
-            gameFileName = "Advance Wars",
-            coverFileNames = listOf("Advance Wars.png"),
+            gameFileName = "Burning Hit!",
+            coverFileNames = listOf("Burning Hit!.png"),
             fanartFileNames = emptyList(),
-            screenshotFileNames = listOf("Advance Wars-screen.png")
+            screenshotFileNames = listOf("Burning Hit!-screen.png")
         )
 
-        assertEquals("Advance Wars.png", result.thumbnailFileName)
-        assertEquals("Advance Wars-screen.png", result.imageFileName)
+        assertEquals("Burning Hit!.png", result.thumbnailFileName)
+        assertEquals("Burning Hit!-screen.png", result.imageFileName)
     }
 
     @Test
@@ -51,23 +51,23 @@ class GamelistTransformTest {
         val xml = """
             <gameList>
               <game>
-                <path>./roms/Mario Kart DS.nds</path>
+                <path>./roms/Ultimate Battles DS.nds</path>
                 <thumbnail>./old/thumb.png</thumbnail>
                 <image>./old/image.png</image>
-                <name>Mario Kart DS</name>
+                <name>Ultimate Battles DS</name>
               </game>
             </gameList>
         """.trimIndent()
 
         val enriched = GamelistTransform.enrich(xml) {
             SelectedMedia(
-                thumbnailFileName = "Mario Kart DS.png",
-                imageFileName = "Mario Kart DS-fanart.png"
+                thumbnailFileName = "Ultimate Battles DS.png",
+                imageFileName = "Ultimate Battles DS-fanart.png"
             )
         }
 
-        assertTrue(enriched.contains("./media/thumbnail/Mario Kart DS.png"))
-        assertTrue(enriched.contains("./media/image/Mario Kart DS-fanart.png"))
+        assertTrue(enriched.contains("./media/thumbnail/Ultimate Battles DS.png"))
+        assertTrue(enriched.contains("./media/image/Ultimate Battles DS-fanart.png"))
         assertFalse(enriched.contains("./old/thumb.png"))
         assertFalse(enriched.contains("./old/image.png"))
     }
@@ -77,35 +77,35 @@ class GamelistTransformTest {
         val xml = """
             <gameList>
               <game>
-                <path>./roms/Mario Kart DS.nds</path>
-                <name>Mario Kart DS</name>
+                <path>./roms/Ultimate Battles DS.nds</path>
+                <name>Ultimate Battles DS</name>
               </game>
               <game>
-                <path>./roms/Advance Wars.nds</path>
-                <name>Advance Wars</name>
+                <path>./roms/Burning Hit!.nds</path>
+                <name>Burning Hit!</name>
               </game>
             </gameList>
         """.trimIndent()
 
         val plan = GamelistTransform.buildMediaSyncPlan(xml) { gameFileName ->
             when (gameFileName) {
-                "Mario Kart DS" -> SelectedMedia(
-                    thumbnailFileName = "Mario Kart DS.png",
-                    imageFileName = "Mario Kart DS-fanart.png"
+                "Ultimate Battles DS" -> SelectedMedia(
+                    thumbnailFileName = "Ultimate Battles DS.png",
+                    imageFileName = "Ultimate Battles DS-fanart.png"
                 )
-                "Advance Wars" -> SelectedMedia(
-                    thumbnailFileName = "Advance Wars.png",
+                "Burning Hit!" -> SelectedMedia(
+                    thumbnailFileName = "Burning Hit!.png",
                     imageFileName = null
                 )
                 else -> SelectedMedia()
             }
         }
 
-        assertEquals(setOf("Mario Kart DS.png", "Advance Wars.png"), plan.desiredThumbnailFileNames)
-        assertEquals(setOf("Mario Kart DS-fanart.png"), plan.desiredImageFileNames)
-        assertTrue(plan.xmlContent.contains("./media/thumbnail/Mario Kart DS.png"))
-        assertTrue(plan.xmlContent.contains("./media/thumbnail/Advance Wars.png"))
-        assertTrue(plan.xmlContent.contains("./media/image/Mario Kart DS-fanart.png"))
+        assertEquals(setOf("Ultimate Battles DS.png", "Burning Hit!.png"), plan.desiredThumbnailFileNames)
+        assertEquals(setOf("Ultimate Battles DS-fanart.png"), plan.desiredImageFileNames)
+        assertTrue(plan.xmlContent.contains("./media/thumbnail/Ultimate Battles DS.png"))
+        assertTrue(plan.xmlContent.contains("./media/thumbnail/Burning Hit!.png"))
+        assertTrue(plan.xmlContent.contains("./media/image/Ultimate Battles DS-fanart.png"))
     }
 
     @Test
