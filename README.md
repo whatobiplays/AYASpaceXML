@@ -1,5 +1,5 @@
 <div align="center">
-<img src=".github/resources/icon.png" height="180px" width="auto" alt="romm logo">
+<img src=".github/resources/icon.png" height="180px" width="auto" alt="AYASpaceXML Logo">
 </div>
 
 # AYASpaceXML
